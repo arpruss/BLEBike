@@ -42,7 +42,8 @@ uint32_t lastUpdateTime = 0;
 
 #define NUM_FRICTIONS 8
 // friction model: force = -frictionCoeff * angularVelocity
-uint32_t frictionCoeffX10[] = { 141, 191, 203, 220, 284, 370, 382, 384 };
+const uint32_t frictionCoeffX10[] = { 141, 191, 203, 220, 284, 370, 382, 384 };
+#define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
 const uint32_t flashPlayDuration = 200;
@@ -53,8 +54,7 @@ uint32_t flashStartTime = 0;
 
 char flashPatterns[][NUM_FRICTIONS*2+2] = { "10D", "1010D", "101010D", "10101010D", "1010101010D", "101010101010D", "10101010101010D", "1010101010101010D" };
 
-byte frictionValue = 5;
-#define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
+byte frictionValue = 0;
 
 byte cscmeasurement[5] = { 2 };
 byte powermeasurement[6] = { 0x20 }; // include crank revolution data
@@ -71,7 +71,7 @@ bool _BLEClientConnected = false;
 BLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
 BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPERTY_READ);
 
-BLEDescriptor cscMeasurementDescriptor(ID(0x2901));
+//BLEDescriptor cscMeasurementDescriptor(ID(0x2901));
 BLEDescriptor cscFeatureDescriptor(ID(0x2901));
 #endif
 
@@ -81,7 +81,7 @@ BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic:
 BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
 
-BLEDescriptor powerMeasurementDescriptor(ID(0x2901));
+//BLEDescriptor powerMeasurementDescriptor(ID(0x2901));
 BLEDescriptor powerFeatureDescriptor(ID(0x2901));
 BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
 #endif
@@ -112,7 +112,7 @@ void InitBLE ()
   pSpeed->addCharacteristic(&cscMeasurementCharacteristics);
   pSpeed->addCharacteristic(&cscFeatureCharacteristics);
 
-  cscMeasurementDescriptor.setValue("CSC Measurement");
+ // cscMeasurementDescriptor.setValue("CSC Measurement");
  // cscMeasurementCharacteristics.addDescriptor(&cscMeasurementDescriptor);
   cscMeasurementCharacteristics.addDescriptor(new BLE2902());
 
@@ -130,7 +130,7 @@ void InitBLE ()
   pPower->addCharacteristic(&powerFeatureCharacteristics);
   pPower->addCharacteristic(&powerSensorLocationCharacteristics);
 
-  powerMeasurementDescriptor.setValue("Power Measurement");
+ // powerMeasurementDescriptor.setValue("Power Measurement");
  // powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
   powerMeasurementCharacteristics.addDescriptor(new BLE2902());
 
@@ -212,11 +212,6 @@ void setup ()
 }
 
 uint32_t calculatePower(uint32_t revTimeMillis) {
-  // typical: angularVelocity = 6 rad / sec
-  //          distance = angularVelocity * r * time = 0.87m
-  //          frictionalForce = 6 * 25 = 150N
-  //          workPerSec = 150 * 0.87 = 130W
-  //
   // angularVelocity = 2 * pi / revTime
   // distance = angularVelocity * r * dt
   // force = angularVelocity * frictionCoeff
@@ -322,9 +317,7 @@ void loop ()
 
 #ifdef POWER
   powerFeatureCharacteristics.setValue(&powerfeature, 1);
-//  powerFeatureCharacteristics.notify();
   powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
-//  powerSensorLocationCharacteristics.notify(); 
 
   powerMeasurementCharacteristics.setValue(powermeasurement, sizeof(powermeasurement));
   powerMeasurementCharacteristics.notify();
