@@ -219,7 +219,7 @@ void setup ()
   lcd.clearDisplay();
   lcd.setCursor(1,0);
   lcd.setTextSize(2);
-  lcd.print("BLEBike");
+  lcd.print("BLE\nBike");
   lcd.display();
   lcd.setTextSize(1);
 #endif  
@@ -261,21 +261,22 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   static bool initialized = false;
   if (! initialized) {
     lcd.setCursor(0,0);
-    lcd.println("Rev:");
-    lcd.println("Power:");
-    lcd.println("KCal:");
-    lcd.println("Time:");
-    lcd.println("RPM:");
-    lcd.println("Frict:");
+    lcd.println("Rev");
+    lcd.println("Power");
+    lcd.println("KCal");
+    lcd.println("Time");
+    lcd.println("RPM");
+    lcd.println("Frict");
   }
   uint32_t y = 0;
-  lcd.setCursor(40,y);
+  const uint32_t x = 40-6;
+  lcd.setCursor(x,y);
   lcd.print(crankRevolution);
-  lcd.setCursor(40,y+=8);
+  lcd.setCursor(x,y+=8);
   lcd.print(String(power)+"W");
-  lcd.setCursor(40,y+=8);
+  lcd.setCursor(x,y+=8);
   lcd.println(String(joules/1000));
-  lcd.setCursor(40,y+=8);
+  lcd.setCursor(x,y+=8);
   char t[24];
   pedalledTime /= 1000;
   unsigned sec = pedalledTime % 60;
@@ -284,9 +285,9 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   pedalledTime /= 60;
   sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
   lcd.println(t);
-  lcd.setCursor(40,y+=8);
+  lcd.setCursor(x,y+=8);
   lcd.println(String(rpm)+"    ");
-  lcd.setCursor(40,y+=8);
+  lcd.setCursor(x,y+=8);
   lcd.println(String(friction)+" ");
   lcd.display();
 #endif  
@@ -309,7 +310,11 @@ void loop ()
   if (incButton.getEvent() == DEBOUNCE_PRESSED) {
     setFriction((frictionValue + 1) % NUM_FRICTIONS);
   }
+#ifdef LCD
+  digitalWrite(ledPin, rotationDetect);
+#else  
   flashPlay();
+#endif  
 
   needUpdate = 0;
 
