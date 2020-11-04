@@ -15,22 +15,37 @@ heavily modified by Alexander Pruss
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h> 
+#include <Adafruit_GFX.h>
+
+#include <Adafruit_PCD8544.h>
 #include "debounce.h"
 
 #define POWER
 #define CADENCE
-#undef TEST
+#define LCD
+#undef MTEST
 
 #ifndef TEST
 const uint32_t rotationDetectPin = 23;
 #endif
+
+#ifdef LCD
+// int8_t SCLK, int8_t DIN, int8_t DC, int8_t CS, int8_t RST
+static Adafruit_PCD8544 lcd(14,13,27,15,26); 
+#endif
+
 const uint32_t ledPin = 2;
 const uint32_t incPin = 0;
 Debounce incButton(incPin, LOW);
 const uint8_t defaultRotationValue = 1;
 const uint32_t rotationDebounceTime = 100;
 const uint32_t minimumUpdateTime = 250;
+const uint32_t idleTime = 4000;
 uint32_t lastRotationDuration = 0;
+uint32_t prevPowerTime = 0;
+
+uint64_t millijoules = 0;
+uint32_t pedalledTime = 0;
 
 uint32_t lastReportedRotationTime = 0;
 uint16_t lastCrankRevolution = 0; // in 1024ths of a second!
@@ -199,6 +214,15 @@ void flashPlay() {
 
 void setup ()
 {
+#ifdef LCD  
+  lcd.begin(60);
+  lcd.clearDisplay();
+  lcd.setCursor(1,0);
+  lcd.setTextSize(2);
+  lcd.print("BLEBike");
+  lcd.display();
+  lcd.setTextSize(1);
+#endif  
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
@@ -231,6 +255,43 @@ inline uint16_t getTime1024ths(uint32_t ms)
   return ms * 128/125;
 }
 
+void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t friction, uint32_t rpm)
+{
+#ifdef LCD   
+  static bool initialized = false;
+  if (! initialized) {
+    lcd.setCursor(0,0);
+    lcd.println("Rev:");
+    lcd.println("Power:");
+    lcd.println("KCal:");
+    lcd.println("Time:");
+    lcd.println("RPM:");
+    lcd.println("Frict:");
+  }
+  uint32_t y = 0;
+  lcd.setCursor(40,y);
+  lcd.print(crankRevolution);
+  lcd.setCursor(40,y+=8);
+  lcd.print(String(power)+"W");
+  lcd.setCursor(40,y+=8);
+  lcd.println(String(joules/1000));
+  lcd.setCursor(40,y+=8);
+  char t[24];
+  pedalledTime /= 1000;
+  unsigned sec = pedalledTime % 60;
+  pedalledTime /= 60;
+  unsigned min = pedalledTime % 60;
+  pedalledTime /= 60;
+  sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
+  lcd.println(t);
+  lcd.setCursor(40,y+=8);
+  lcd.println(String(rpm)+"    ");
+  lcd.setCursor(40,y+=8);
+  lcd.println(String(friction)+" ");
+  lcd.display();
+#endif  
+}
+
 void loop ()
 {
   uint8_t rotationDetect;
@@ -258,8 +319,9 @@ void loop ()
   if (rotationDetect && ! prevRotationDetect && fromLastRotation >= rotationDebounceTime) {
     Serial.println("rotation detected at "+String(fromLastRotation));
     lastRotationDuration = curRotationDuration;
+    if (lastReportedRotationTime>0)
+      crankRevolution++;
     lastReportedRotationTime = ms;
-    crankRevolution++;
     lastCrankRevolution = getTime1024ths(ms);
     needUpdate = 1;
   }
@@ -274,14 +336,26 @@ void loop ()
 
   uint32_t power = crankRevolution >= 2 ? calculatePower(lastRotationDuration) : 0;
 
-  if (power > 0x7FFF)
-    power = 0x7FFF;
+  if (prevPowerTime > 0) {
+    millijoules += power * (ms - prevPowerTime);
+    if (lastRotationDuration < idleTime) {
+      pedalledTime += ms - prevPowerTime;
+    }
+  }
+
+  prevPowerTime = ms;
 
   if (ms - lastUpdateTime >= minimumUpdateTime) 
     needUpdate = 1;
 
+  lcd.clearDisplay();
+  show(crankRevolution,power,millijoules/1000,pedalledTime,frictionValue+1,60000/lastRotationDuration);
+
   if (! needUpdate)
     return;
+
+  if (power > 0x7FFF)
+    power = 0x7FFF;
 
   if ( 0 && !_BLEClientConnected)
     return;
