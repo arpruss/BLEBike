@@ -6,19 +6,18 @@ radius = 0.145 # meters
 mass = 2.72 # kg
 crankMassAdjusted = 0.25 # kg, but adjusted for moment of inertia
 g = 9.81
-dt = 0.0001
-# const
-#minFriction = 0
-#maxFriction = 40
-#frictionPrecision = 0.002
-# linear
-minFriction = 0
-maxFriction = 75
-frictionPrecision = 0.05
-# quad
-#minFriction = 0
-#maxFriction = 1000
-#frictionPrecision = 1
+dt = 0.00001
+
+LINEAR = 1
+
+if not LINEAR:
+    minFriction = 10.56
+    maxFriction = 40
+    frictionPrecision = 0.002
+else:
+    minFriction = 0
+    maxFriction = 75
+    frictionPrecision = 0.2
 
 def estimateTime_const(theta0, theta1, friction):
     t = 0
@@ -28,11 +27,13 @@ def estimateTime_const(theta0, theta1, friction):
     prevAccel = 0
     
     while theta > theta1:
-        angularAccel = -cos(theta0) * g * mass / radius / (mass + crankMassAdjusted) + friction / radius / (mass+crankMassAdjusted)
-        if angularAccel >= 0:
-            return float("inf")
+        angularAccel = -cos(theta) * g * mass / radius / (mass + crankMassAdjusted) + friction / radius / (mass+crankMassAdjusted)
         effectiveAccel = angularAccel if t==0 else (angularAccel + prevAccel) / 2.
+        if effectiveAccel > 0:
+            effectiveAccel = 0
         angularVelocity += dt * effectiveAccel
+        if angularVelocity >= 0:
+            return float("inf")
         theta += dt * (angularVelocity + prevVelocity) / 2.
         t += dt
         
@@ -49,11 +50,13 @@ def estimateTime_linear(theta0, theta1, friction):
     prevAccel = 0
     
     while theta > theta1:
-        angularAccel = -cos(theta0) * g * mass / radius / (mass + crankMassAdjusted) - friction * prevVelocity / radius / (mass+crankMassAdjusted) 
-        if angularAccel >= 0:
-            return float("inf")
+        angularAccel = -cos(theta) * g * mass / radius / (mass + crankMassAdjusted) - friction * prevVelocity / radius / (mass+crankMassAdjusted) 
         effectiveAccel = angularAccel if t==0 else (angularAccel + prevAccel) / 2.
+        if effectiveAccel > 0:
+            effectiveAccel = 0
         angularVelocity += dt * effectiveAccel
+        if angularVelocity >= 0:
+            return float("inf")
         theta += dt * (angularVelocity + prevVelocity) / 2.
         t += dt
         
@@ -62,42 +65,24 @@ def estimateTime_linear(theta0, theta1, friction):
         
     return t
     
-def estimateTime_quad(theta0, theta1, friction):
-    t = 0
-    theta = theta0
-    angularVelocity = 0
-    prevVelocity = 0
-    prevAccel = 0
-    
-    while theta > theta1:
-        angularAccel = -cos(theta0) * g / radius + friction * prevVelocity * prevVelocity / mass
-        if angularAccel >= 0:
-            return float("inf")
-        effectiveAccel = angularAccel if t==0 else (angularAccel + prevAccel) / 2.
-        angularVelocity += dt * effectiveAccel
-        theta += dt * (angularVelocity + prevVelocity) / 2.
-        t += dt
-        
-        prevAccel = angularAccel
-        prevVelocity = angularVelocity
-        
-    return t
-    
-estimateTime = estimateTime_linear
+estimateTime = estimateTime_const if not LINEAR else estimateTime_linear
 
 def estimateFriction(theta0, theta1, t):
-    bestFriction = 0
+    bestFriction = minFriction
     bestError = abs(estimateTime(theta0, theta1, 0)-t)
     
     friction = bestFriction + frictionPrecision
     
     while friction < maxFriction:
-        error = abs(estimateTime(theta0, theta1, friction)-t)
+        est = estimateTime(theta0, theta1, friction)
+        if est >= float("inf"):
+            break
+        error = abs(est-t)
         if error < bestError:
             bestError = error
             bestFriction = friction
         friction += frictionPrecision
-        
+                
     return bestFriction
     
 def parseTime(t):
@@ -140,7 +125,7 @@ if __name__ == '__main__':
         f = sum(fs)/float(n)
         for d in data[s]:
             t1 = estimateTime(d[1],d[2],d[0])
-            e = t1-d[3]
+            e = abs(t1-d[3])
             maxError = max(e,maxError)            
             rms += e*e
             rmsCount += 1

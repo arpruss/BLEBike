@@ -22,14 +22,38 @@ heavily modified by Alexander Pruss
 
 #define POWER
 #define CADENCE
+//#define LCD5110
+#define LCDHD44780
+#undef TEST
+
+#ifdef LCDHD44780
 #define LCD
-#undef MTEST
+#include <LiquidCrystal.h>
+const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
+// 1-16 on LCD board
+// Left / Right on ESP32 with USB port at bottom
+// 1 = GND = Right Top
+// 2 = VCC = Left Top
+// 3 = resistor to GND
+// 4 = RS = GPIO12 = Left from bottom 7
+// 5 = RW = GND = Right from top 7
+// 6 = EN = GPIO14 = Left from bottom 8
+// 11 = D4 = GPIO27 = Left from bottom 9
+// 12 = D5 = GPIO26 = Left from bottom 10
+// 13 = D6 = GPIO25 = Left from bottom 11
+// 14 = D7 = GPIO33 = Left from bottom 12
+// 15 = 5V = Left from bottom 1
+// 16 = GND = Left from bottom 6
+/*hd44780_pinIO*/ LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+#endif
 
 #ifndef TEST
 const uint32_t rotationDetectPin = 23;
 #endif
 
-#ifdef LCD
+#ifdef LCD5110
+#define BACKLIGHT 25
+#define LCD
 // int8_t SCLK, int8_t DIN, int8_t DC, int8_t CS, int8_t RST
 static Adafruit_PCD8544 lcd(14,13,27,15,26); 
 #endif
@@ -57,7 +81,7 @@ uint32_t lastUpdateTime = 0;
 
 #define NUM_FRICTIONS 8
 // friction model: force = -frictionCoeff * angularVelocity
-const uint32_t frictionCoeffX10[] = { 141, 191, 203, 220, 284, 370, 382, 384 };
+const uint32_t frictionCoeffX10[] = { 247, 289, 311, 337, 411, 528, 558, 623 };
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
@@ -214,7 +238,9 @@ void flashPlay() {
 
 void setup ()
 {
-#ifdef LCD  
+#ifdef LCD5110  
+  pinMode(BACKLIGHT, OUTPUT);
+  digitalWrite(BACKLIGHT, 1);
   lcd.begin(60);
   lcd.clearDisplay();
   lcd.setCursor(1,0);
@@ -222,7 +248,10 @@ void setup ()
   lcd.print("BLE\nBike");
   lcd.display();
   lcd.setTextSize(1);
-#endif  
+#endif
+#ifdef LCDHD44780
+  lcd.begin(20,1);
+#endif
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
@@ -236,6 +265,9 @@ void setup ()
 }
 
 uint32_t calculatePower(uint32_t revTimeMillis) {
+  if (revTimeMillis == 0)
+    return 0;
+// linear friction:
   // angularVelocity = 2 * pi / revTime
   // distance = angularVelocity * r * dt
   // force = angularVelocity * frictionCoeff
@@ -243,8 +275,6 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
   //       = angularVelocity * frictionCoeff * distance / dt
   //       = (2 * pi)^2 * frictionCoeff * r / revTime^2 
   // power = (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 + 0.5) * frictionCoeffX10[frictionValue] / 10000 * 1000^2 / revTimeMillis^2
-  if (revTimeMillis == 0)
-    return 0;
   return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * frictionCoeffX10[frictionValue] / revTimeMillis / revTimeMillis;
 }
 
@@ -255,10 +285,77 @@ inline uint16_t getTime1024ths(uint32_t ms)
   return ms * 128/125;
 }
 
+
+#ifdef LCDHD44780
+void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
+  const unsigned maxDigits = 10;
+  char buffer[maxDigits+1];
+  if (n>maxDigits)
+    n=maxDigits;
+  if (n==0)
+    return;
+  char*p = buffer+maxDigits;
+  *p = 0;
+  do {
+    *--p = '0' + (x % 10);
+    x /= 10;
+    n--;
+  } while(n>0 && x);
+  if (x) {
+    char *q = p;
+    while(*q) {
+      *q++ = '#';
+    }
+  }
+  if (leftAlign) {
+    lcd.print(p);
+    while(n--)
+      lcd.write(' ');
+    return;
+  }
+  while(n>0) {
+    *--p = ' ';
+    n--;
+  }
+  lcd.print(p);
+}
+#endif
+
 void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t friction, uint32_t rpm)
 {
-#ifdef LCD   
+#ifdef LCD
+  char t[32];
+  pedalledTime /= 1000;
+  unsigned sec = pedalledTime % 60;
+  pedalledTime /= 60;
+  unsigned min = pedalledTime % 60;
+  pedalledTime /= 60;
+  sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
+
+#ifdef LCDHD44780
+// 01234567890123456789
+// xxxxW xxxrpm xxxxcal
+// #xxxxx Fx B 00:00:00
+  lcd.setCursor(0,0);
+  printdigits(4, power);
+  lcd.print("W ");
+  printdigits(3, rpm);
+  lcd.print("rpm ");
+  printdigits(4,joules/1000);
+  lcd.print("cal#");
+  printdigits(5,crankRevolution,true);
+  lcd.print("  F");
+  printdigits(1,friction);
+  lcd.write(_BLEClientConnected ? 'B' : ' ');
+  lcd.print(" ");
+  if (pedalledTime < 10)
+    lcd.write(' ');
+  lcd.print(t); 
+#endif
+
+#ifdef LCD5110   
   static bool initialized = false;
+
   if (! initialized) {
     lcd.setCursor(0,0);
     lcd.println("Rev");
@@ -277,13 +374,6 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.setCursor(x,y+=8);
   lcd.println(String(joules/1000));
   lcd.setCursor(x,y+=8);
-  char t[24];
-  pedalledTime /= 1000;
-  unsigned sec = pedalledTime % 60;
-  pedalledTime /= 60;
-  unsigned min = pedalledTime % 60;
-  pedalledTime /= 60;
-  sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
   lcd.println(t);
   lcd.setCursor(x,y+=8);
   lcd.println(String(rpm)+"    ");
@@ -291,6 +381,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.println(String(friction)+" ");
   lcd.display();
 #endif  
+#endif
 }
 
 void loop ()
@@ -341,7 +432,7 @@ void loop ()
 
   uint32_t power = crankRevolution >= 2 ? calculatePower(lastRotationDuration) : 0;
 
-  if (prevPowerTime > 0) {
+  if (prevPowerTime > 0 && crankRevolution >= 1) {
     millijoules += power * (ms - prevPowerTime);
     if (lastRotationDuration < idleTime) {
       pedalledTime += ms - prevPowerTime;
@@ -353,8 +444,7 @@ void loop ()
   if (ms - lastUpdateTime >= minimumUpdateTime) 
     needUpdate = 1;
 
-  lcd.clearDisplay();
-  show(crankRevolution,power,millijoules/1000,pedalledTime,frictionValue+1,60000/lastRotationDuration);
+  show(crankRevolution-1,power,millijoules/1000,pedalledTime,frictionValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
 
   if (! needUpdate)
     return;
@@ -365,13 +455,14 @@ void loop ()
   if ( 0 && !_BLEClientConnected)
     return;
 
+/*
   Serial.print(power);
   Serial.print(" ");
   Serial.print(lastRotationDuration);
   Serial.print(" ");
   Serial.print(crankRevolution);
   Serial.print(" ");
-  Serial.println(lastCrankRevolution); 
+  Serial.println(lastCrankRevolution);  */
 
   lastUpdateTime = ms;
 
