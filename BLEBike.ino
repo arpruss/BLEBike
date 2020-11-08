@@ -82,6 +82,7 @@ uint32_t lastUpdateTime = 0;
 #define NUM_FRICTIONS 8
 // friction model: force = -frictionCoeff * angularVelocity
 const uint32_t frictionCoeffX10[] = { 247, 289, 311, 337, 411, 528, 558, 623 };
+const uint32_t stopRampingFrictionAtRPM=40; // I have no idea if this is right
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
@@ -275,7 +276,8 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
   //       = angularVelocity * frictionCoeff * distance / dt
   //       = (2 * pi)^2 * frictionCoeff * r / revTime^2 
   // power = (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 + 0.5) * frictionCoeffX10[frictionValue] / 10000 * 1000^2 / revTimeMillis^2
-  return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * frictionCoeffX10[frictionValue] / revTimeMillis / revTimeMillis;
+
+  return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * frictionCoeffX10[frictionValue] / revTimeMillis / max(revTimeMillis, 60000 / stopRampingFrictionAtRPM);
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
