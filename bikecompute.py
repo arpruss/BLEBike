@@ -68,7 +68,7 @@ def estimateResistance(theta0, theta1, t, resistanceMomentRatio=None):
             bestError = error
             bestResistance = resistance
         resistance += resistancePrecision
-                
+        
     return bestResistance
     
 def estimateResistanceMomentRatio(angularSpeed, stopAngle):
@@ -180,9 +180,7 @@ if __name__ == '__main__':
                 s += estimateResistance(d.theta0,d.theta1,d.time)
             s /= len(drops[res])
             resistanceCoeffs[res] = s
-        maxError = 0
-        for d in drops[res]:
-            e = abs(estimateTime(d.theta0, d.theta1, resistanceCoeffs[res], moment)-d.time)
-            maxError = max(e,maxError)
-        print(res,resistanceCoeffs[res],"error",maxError)
+            
+        errors = [abs(estimateTime(d.theta0, d.theta1, resistanceCoeffs[res], moment)-d.time) for d in drops[res]]
+        print(res,resistanceCoeffs[res],"errors",errors)
         
