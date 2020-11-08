@@ -45,6 +45,17 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
 // 15 = 5V = Left from bottom 1
 // 16 = GND = Left from bottom 6
 /*hd44780_pinIO*/ LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+
+
+byte bluetooth[8] = {
+  B00110, //..XX.
+  B10101, //X.X.X
+  B01110, //.XXX.
+  B00100, //..X..
+  B01110, //.XXX.
+  B10101, //X.X.X
+  B00110, //..XX.
+};
 #endif
 
 #ifndef TEST
@@ -79,10 +90,10 @@ uint16_t prevRotationDetect = 0;
 uint32_t lastRotationDetectTime = 0;
 uint32_t lastUpdateTime = 0;
 
-#define NUM_FRICTIONS 8
-// friction model: force = -frictionCoeff * angularVelocity
-const uint32_t frictionCoeffX10[] = { 247, 289, 311, 337, 411, 528, 558, 623 };
-const uint32_t stopRampingFrictionAtRPM=40; // I have no idea if this is right
+#define NUM_RESISTANCES 8
+// resistance model: force = -resistanceCoeff * angularVelocity
+const uint32_t resistanceCoeffX10[] = { 234, 276, 300, 327, 404, 521, 552, 617 };
+const uint32_t stopRampingResistanceAtRPM=300; // if you're getting RPM above this, you're breaking records or something is wrong; more likely, the latter
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
@@ -92,9 +103,9 @@ const uint32_t flashDelayDuration = 2000;
 char* flashPattern = NULL;
 uint32_t flashStartTime = 0;
 
-char flashPatterns[][NUM_FRICTIONS*2+2] = { "10D", "1010D", "101010D", "10101010D", "1010101010D", "101010101010D", "10101010101010D", "1010101010101010D" };
+char flashPatterns[][NUM_RESISTANCES*2+2] = { "10D", "1010D", "101010D", "10101010D", "1010101010D", "101010101010D", "10101010101010D", "1010101010101010D" };
 
-byte frictionValue = 0;
+byte resistanceValue = 0;
 
 byte cscmeasurement[5] = { 2 };
 byte powermeasurement[6] = { 0x20 }; // include crank revolution data
@@ -193,8 +204,8 @@ void InitBLE ()
   
 }
 
-void setFriction(uint32_t value) {  
-    frictionValue = value;
+void setResistance(uint32_t value) {  
+    resistanceValue = value;
     flashPattern = flashPatterns[value];
     flashStartTime = millis();
 }
@@ -251,6 +262,7 @@ void setup ()
   lcd.setTextSize(1);
 #endif
 #ifdef LCDHD44780
+  lcd.createChar(1, bluetooth);
   lcd.begin(20,1);
 #endif
   Serial.begin(115200);
@@ -262,22 +274,22 @@ void setup ()
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 1);
   pinMode(0, INPUT);
-  setFriction(0);
+  setResistance(0);
 }
 
 uint32_t calculatePower(uint32_t revTimeMillis) {
   if (revTimeMillis == 0)
     return 0;
-// linear friction:
+// linear resistance:
   // angularVelocity = 2 * pi / revTime
   // distance = angularVelocity * r * dt
-  // force = angularVelocity * frictionCoeff
+  // force = angularVelocity * resistanceCoeff
   // power = force * distance / dt
-  //       = angularVelocity * frictionCoeff * distance / dt
-  //       = (2 * pi)^2 * frictionCoeff * r / revTime^2 
-  // power = (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 + 0.5) * frictionCoeffX10[frictionValue] / 10000 * 1000^2 / revTimeMillis^2
+  //       = angularVelocity * resistanceCoeff * distance / dt
+  //       = (2 * pi)^2 * resistanceCoeff * r / revTime^2 
+  // power = (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 + 0.5) * resistanceCoeffX10[resistanceValue] / 10000 * 1000^2 / revTimeMillis^2
 
-  return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * frictionCoeffX10[frictionValue] / revTimeMillis / max(revTimeMillis, 60000 / stopRampingFrictionAtRPM);
+  return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffX10[resistanceValue] / revTimeMillis / max(revTimeMillis, 60000 / stopRampingResistanceAtRPM);
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
@@ -323,7 +335,7 @@ void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
 }
 #endif
 
-void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t friction, uint32_t rpm)
+void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t resistance, uint32_t rpm)
 {
 #ifdef LCD
   char t[32];
@@ -337,7 +349,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 #ifdef LCDHD44780
 // 01234567890123456789
 // xxxxW xxxrpm xxxxcal
-// #xxxxx Fx B 00:00:00
+// #xxxxx Rx B 00:00:00
   lcd.setCursor(0,0);
   printdigits(4, power);
   lcd.print("W ");
@@ -346,10 +358,9 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   printdigits(4,joules/1000);
   lcd.print("cal#");
   printdigits(5,crankRevolution,true);
-  lcd.print("  F");
-  printdigits(1,friction);
-  lcd.write(_BLEClientConnected ? 'B' : ' ');
-  lcd.print(" ");
+  lcd.print(" R");
+  printdigits(1,resistance);
+  lcd.print(_BLEClientConnected ? " \x01 " : "   ");
   if (pedalledTime < 10)
     lcd.write(' ');
   lcd.print(t); 
@@ -365,7 +376,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
     lcd.println("KCal");
     lcd.println("Time");
     lcd.println("RPM");
-    lcd.println("Frict");
+    lcd.println("Resis");
   }
   uint32_t y = 0;
   const uint32_t x = 40-6;
@@ -380,7 +391,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.setCursor(x,y+=8);
   lcd.println(String(rpm)+"    ");
   lcd.setCursor(x,y+=8);
-  lcd.println(String(friction)+" ");
+  lcd.println(String(resistance)+" ");
   lcd.display();
 #endif  
 #endif
@@ -401,7 +412,7 @@ void loop ()
   rotationDetect = digitalRead(rotationDetectPin) ^ defaultRotationValue;
 #endif
   if (incButton.getEvent() == DEBOUNCE_PRESSED) {
-    setFriction((frictionValue + 1) % NUM_FRICTIONS);
+    setResistance((resistanceValue + 1) % NUM_RESISTANCES);
   }
 #ifdef LCD
   digitalWrite(ledPin, rotationDetect);
@@ -446,7 +457,7 @@ void loop ()
   if (ms - lastUpdateTime >= minimumUpdateTime) 
     needUpdate = 1;
 
-  show(crankRevolution-1,power,millijoules/1000,pedalledTime,frictionValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
+  show(crankRevolution-1,power,millijoules/1000,pedalledTime,resistanceValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
 
   if (! needUpdate)
     return;
