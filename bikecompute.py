@@ -1,11 +1,9 @@
 from __future__ import print_function 
 from math import *
-import collections
 
 radius = 0.145 # meters
 mass = 2.72 # kg
-crankMassAdjusted = 10 # kg, but adjusted for moment of inertia and flywheel
-moment = crankMassAdjusted * radius
+moment = 10 * radius
 g = 9.81
 dt = 0.00005
 
@@ -17,35 +15,32 @@ class Drop(object):
         this.theta1 = theta1
         this.time = time
 
-if not LINEAR:
-    minResistance = 10.56
-    maxResistance = 40
-    resistancePrecision = 0.002
-else:
-    minResistance = 0
-    maxResistance = 75
-    resistancePrecision = 0.2
+minResistance = 5
+maxResistance = 75
+resistancePrecision = 1
 
-def estimateTime(theta0, theta1, resistanceCoeff, flywheelMoment):
+def estimateTime(theta0, theta1, resistanceCoeff, flywheelMoment, angularVelocity=0):
     t = 0
     theta = theta0
-    angularVelocity = 0
-    prevVelocity = 0
+    prevVelocity = angularVelocity
     prevAccel = 0
+    angularAccel = 0
     
     while theta > theta1:
-        angularAccel = (-cos(theta) * g * mass - resistanceCoeff * prevVelocity ) / (flywheelMoment + mass * radius)
+        prevAccel = angularAccel
+        torque = -cos(theta) * g * mass * radius - resistanceCoeff * (prevVelocity * radius) * radius
+        angularAccel = torque / (flywheelMoment + mass * radius * radius)
         effectiveAccel = angularAccel if t==0 else (angularAccel + prevAccel) / 2.
         if effectiveAccel > 0:
             effectiveAccel = 0
+        prevVelocity = angularVelocity
         angularVelocity += dt * effectiveAccel
+        #print(theta0-theta,angularVelocity)
         if angularVelocity >= 0:
             return float("inf")
         theta += dt * (angularVelocity + prevVelocity) / 2.
         t += dt
         
-        prevAccel = angularAccel
-        prevVelocity = angularVelocity
         
     return t
     
@@ -71,13 +66,13 @@ def estimateResistance(theta0, theta1, t, resistanceMomentRatio=None):
         
     return bestResistance
     
-def estimateResistanceMomentRatio(angularSpeed, stopAngle):
-    # d^2 theta / dt^2 = -angularVel * ratio
-    # angularVel(t) = A * exp(-ratio * t)
-    # stopAngle = integral of angularVel(t) from 0 to infinity = A / ratio
+def calculateResistanceMomentRatio(angularSpeed, stopAngle):
+    # d^2 theta / dt^2 = -angularVel * ratio * r^2
+    # angularVel(t) = A * exp(-ratio * r^2 * t)
+    # stopAngle = integral of angularVel(t) from 0 to infinity = A / (ratio * r^2))
     # A = angularSpeed
-    # ratio = angularSpeed / stopAngle
-    return angularSpeed / stopAngle
+    # ratio * r^2 = angularSpeed / stopAngle
+    return angularSpeed / (stopAngle * radius * radius)
     
 def parseTime(t,fps=30.):
     if ',' in t:
@@ -90,9 +85,6 @@ if __name__ == '__main__':
     import sys
     
     data = {}
-    setting = "(unknown)"
-    rms = 0
-    rmsCount = 0
     maxError = 0
     
     drops = {}
@@ -147,14 +139,16 @@ if __name__ == '__main__':
                 theta0 = pi/180. * float(s[3])
                 theta1 = pi/180. * float(s[5])
                 theta2 = pi/180. * float(s[6])
-                angularSpeed=(theta1-theta0)/t
-                stopAngle=theta2-theta1
+                angularSpeed=abs(theta1-theta0)/t
+                stopAngle=abs(theta2-theta1)
                 # d^2 theta / dt^2 = -angularVel * ratio
                 # angularVel(t) = A * exp(-ratio * t)
                 # stopAngle = integral of angularVel(t) from 0 to infinity = A / ratio
                 # A = angularSpeed
                 # ratio = angularSpeed / stopAngle
-                ratio = angularSpeed / stopAngle
+                # units = s^-1
+                #print("angularSpeed",angularSpeed,"stopAngle",stopAngle)
+                ratio = calculateResistanceMomentRatio(angularSpeed, stopAngle)
                 ratioSum += ratio                
                 spinCount += 1
             else:

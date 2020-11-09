@@ -350,6 +350,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 // 01234567890123456789
 // xxxxW xxxrpm xxxxcal
 // #xxxxx Rx B 00:00:00
+  //lcd.begin(20,(millis()%2000)<1000?1:4);
   lcd.setCursor(0,0);
   printdigits(4, power);
   lcd.print("W ");
