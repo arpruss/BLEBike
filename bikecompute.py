@@ -17,7 +17,7 @@ class Drop(object):
 
 minResistance = 5
 maxResistance = 75
-resistancePrecision = 1
+resistancePrecision = 0.2
 
 def estimateTime(theta0, theta1, resistanceCoeff, flywheelMoment, angularVelocity=0):
     t = 0
@@ -28,14 +28,13 @@ def estimateTime(theta0, theta1, resistanceCoeff, flywheelMoment, angularVelocit
     
     while theta > theta1:
         prevAccel = angularAccel
-        torque = -cos(theta) * g * mass * radius - resistanceCoeff * (prevVelocity * radius) * radius
+        torque = -cos(theta) * g * mass * radius - resistanceCoeff * prevVelocity * radius
         angularAccel = torque / (flywheelMoment + mass * radius * radius)
         effectiveAccel = angularAccel if t==0 else (angularAccel + prevAccel) / 2.
         if effectiveAccel > 0:
             effectiveAccel = 0
         prevVelocity = angularVelocity
         angularVelocity += dt * effectiveAccel
-        #print(theta0-theta,angularVelocity)
         if angularVelocity >= 0:
             return float("inf")
         theta += dt * (angularVelocity + prevVelocity) / 2.
@@ -67,12 +66,14 @@ def estimateResistance(theta0, theta1, t, resistanceMomentRatio=None):
     return bestResistance
     
 def calculateResistanceMomentRatio(angularSpeed, stopAngle):
-    # d^2 theta / dt^2 = -angularVel * ratio * r^2
-    # angularVel(t) = A * exp(-ratio * r^2 * t)
-    # stopAngle = integral of angularVel(t) from 0 to infinity = A / (ratio * r^2))
+    # d^2 r theta / dt^2 = -angularVel * coeff / m
+    # d^2 theta / dt^2 = -angularVel * coeff * r / I
+    # d^2 theta / dt^2 = -angularVel * ratio * r
+    # angularVel(t) = A * exp(-ratio * r * t)
+    # stopAngle = integral of angularVel(t) from 0 to infinity = A / (ratio * r)
     # A = angularSpeed
-    # ratio * r^2 = angularSpeed / stopAngle
-    return angularSpeed / (stopAngle * radius * radius)
+    # ratio * r = angularSpeed / stopAngle
+    return angularSpeed / (stopAngle * radius)
     
 def parseTime(t,fps=30.):
     if ',' in t:
@@ -141,13 +142,6 @@ if __name__ == '__main__':
                 theta2 = pi/180. * float(s[6])
                 angularSpeed=abs(theta1-theta0)/t
                 stopAngle=abs(theta2-theta1)
-                # d^2 theta / dt^2 = -angularVel * ratio
-                # angularVel(t) = A * exp(-ratio * t)
-                # stopAngle = integral of angularVel(t) from 0 to infinity = A / ratio
-                # A = angularSpeed
-                # ratio = angularSpeed / stopAngle
-                # units = s^-1
-                #print("angularSpeed",angularSpeed,"stopAngle",stopAngle)
                 ratio = calculateResistanceMomentRatio(angularSpeed, stopAngle)
                 ratioSum += ratio                
                 spinCount += 1

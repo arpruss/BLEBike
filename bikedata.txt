@@ -1,13 +1,14 @@
 weight 2.72
 radius 0.145
 minResistance 5
-maxResistance 400
+maxResistance 100
 moment 0.18
 
 fps 60
 
-#spin 1 25,4 -90 25,15 17 769
-#spin 1 49,38 -90 49,48 20 714
+# for calculating an effective moment of inertia
+spin 1 25,4 -90 25,15 17 769
+spin 1 49,38 -90 49,48 20 714
 
 fps 30
 

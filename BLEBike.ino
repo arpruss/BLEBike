@@ -92,7 +92,8 @@ uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
 // resistance model: force = -resistanceCoeff * angularVelocity
-const uint32_t resistanceCoeffX10[] = { 234, 276, 300, 327, 404, 521, 552, 617 };
+const uint32_t resistanceCoeffX10[] =  {103,157,199,240,333,471,503,574};
+//{ 236, 278, 301, 329, 404, 523, 553, 619 };
 const uint32_t stopRampingResistanceAtRPM=300; // if you're getting RPM above this, you're breaking records or something is wrong; more likely, the latter
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
