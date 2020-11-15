@@ -15,9 +15,7 @@ heavily modified by Alexander Pruss
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h> 
-#include <Adafruit_GFX.h>
-
-#include <Adafruit_PCD8544.h>
+#include <ArduinoNvs.h>
 #include "debounce.h"
 
 #define POWER
@@ -28,7 +26,10 @@ heavily modified by Alexander Pruss
 
 #ifdef LCDHD44780
 #define LCD
-#include <LiquidCrystal.h>
+//#include <LiquidCrystal.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_pinIO.h> // Arduino pin i/o class header
+
 const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
 // 1-16 on LCD board
 // Left / Right on ESP32 with USB port at bottom
@@ -44,7 +45,9 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
 // 14 = D7 = GPIO33 = Left from bottom 12
 // 15 = 5V = Left from bottom 1
 // 16 = GND = Left from bottom 6
-/*hd44780_pinIO*/ LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
+//LiquidCrystal 
+hd44780_pinIO
+lcd(rs, en, d4, d5, d6, d7);
 
 
 byte bluetooth[8] = {
@@ -63,6 +66,9 @@ const uint32_t rotationDetectPin = 23;
 #endif
 
 #ifdef LCD5110
+#include <Adafruit_GFX.h>
+#include <Adafruit_PCD8544.h>
+
 #define BACKLIGHT 25
 #define LCD
 // int8_t SCLK, int8_t DIN, int8_t DC, int8_t CS, int8_t RST
@@ -94,7 +100,7 @@ uint32_t lastUpdateTime = 0;
 // resistance model: force = -resistanceCoeff * angularVelocity
 const uint32_t resistanceCoeffX10[] =  {103,157,199,240,333,471,503,574};
 //{ 236, 278, 301, 329, 404, 523, 553, 619 };
-const uint32_t stopRampingResistanceAtRPM=300; // if you're getting RPM above this, you're breaking records or something is wrong; more likely, the latter
+const uint32_t stopRampingResistanceAtRPM=60; // if you're getting RPM above this, you're breaking records or something is wrong; more likely, the latter
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
@@ -107,14 +113,14 @@ uint32_t flashStartTime = 0;
 char flashPatterns[][NUM_RESISTANCES*2+2] = { "10D", "1010D", "101010D", "10101010D", "1010101010D", "101010101010D", "10101010101010D", "1010101010101010D" };
 
 byte resistanceValue = 0;
-
+byte savedResistanceValue = 0;
 byte cscmeasurement[5] = { 2 };
 byte powermeasurement[6] = { 0x20 }; // include crank revolution data
 byte cscfeature = 2;
 byte powerfeature = 8; // crank revolution
 byte powerlocation = 6; // right crank
 
-bool _BLEClientConnected = false;
+bool bleConnected = false;
 
 #define ID(x) (BLEUUID((uint16_t)(x)))
 
@@ -143,13 +149,13 @@ class MyServerCallbacks:public BLEServerCallbacks
   void onConnect(BLEServer* pServer)
   {
     Serial.println("connected");
-    _BLEClientConnected = true;
+    bleConnected = true;
   };
 
   void onDisconnect(BLEServer* pServer)
   {
     Serial.println("disconnected");
-    _BLEClientConnected = false;
+    bleConnected = false;
   }
 };
 
@@ -164,8 +170,6 @@ void InitBLE ()
   pSpeed->addCharacteristic(&cscMeasurementCharacteristics);
   pSpeed->addCharacteristic(&cscFeatureCharacteristics);
 
- // cscMeasurementDescriptor.setValue("CSC Measurement");
- // cscMeasurementCharacteristics.addDescriptor(&cscMeasurementDescriptor);
   cscMeasurementCharacteristics.addDescriptor(new BLE2902());
 
   cscFeatureDescriptor.setValue("CSC Feature");
@@ -201,8 +205,6 @@ void InitBLE ()
   pServer->getAdvertising()->setMinPreferred(0x06);  // functions that help with iPhone connections issue
   pServer->getAdvertising()->setMinPreferred(0x12);
   pServer->getAdvertising()->start();
-
-  
 }
 
 void setResistance(uint32_t value) {  
@@ -249,7 +251,7 @@ void flashPlay() {
   flashStartTime = millis(); // rewind
 }
 
-void setup ()
+void setup()
 {
 #ifdef LCD5110  
   pinMode(BACKLIGHT, OUTPUT);
@@ -264,18 +266,21 @@ void setup ()
 #endif
 #ifdef LCDHD44780
   lcd.createChar(1, bluetooth);
-  lcd.begin(20,1);
+  lcd.begin(20,4);
 #endif
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
 #ifndef TEST  
-  pinMode(rotationDetectPin, INPUT); 
+  pinMode(rotationDetectPin, INPUT_PULLUP); 
 #endif  
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 1);
   pinMode(0, INPUT);
-  setResistance(0);
+
+  NVS.begin();
+  setResistance(NVS.getInt("res", 0));
+  savedResistanceValue = resistanceValue;
 }
 
 uint32_t calculatePower(uint32_t revTimeMillis) {
@@ -362,10 +367,14 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   printdigits(5,crankRevolution,true);
   lcd.print(" R");
   printdigits(1,resistance);
-  lcd.print(_BLEClientConnected ? " \x01 " : "   ");
+  lcd.print(bleConnected ? " \x01 " : "   ");
   if (pedalledTime < 10)
     lcd.write(' ');
   lcd.print(t); 
+/*  lcd.setCursor(1,0);
+  lcd.print("l1");
+  lcd.setCursor(3,0);
+  lcd.print("l3"); */
 #endif
 
 #ifdef LCD5110   
@@ -399,6 +408,17 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 #endif
 }
 
+void checkSaveResistance() {
+  static uint32_t lastSavedTime = 0;
+  if (resistanceValue == savedResistanceValue)
+    return;
+  if ((millis() - lastSavedTime) < 4000)
+    return; // reduce wear by not saving right away
+  NVS.setInt("res", resistanceValue);
+  savedResistanceValue = resistanceValue;
+  lastSavedTime = millis();
+}
+
 void loop ()
 {
   uint8_t rotationDetect;
@@ -421,6 +441,8 @@ void loop ()
 #else  
   flashPlay();
 #endif  
+
+  checkSaveResistance();
 
   needUpdate = 0;
 
@@ -467,7 +489,7 @@ void loop ()
   if (power > 0x7FFF)
     power = 0x7FFF;
 
-  if ( 0 && !_BLEClientConnected)
+  if (!bleConnected)
     return;
 
 /*
