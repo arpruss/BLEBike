@@ -114,10 +114,10 @@ char flashPatterns[][NUM_RESISTANCES*2+2] = { "10D", "1010D", "101010D", "101010
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
-byte cscmeasurement[5] = { 2 };
-byte powermeasurement[6] = { 0x20 }; // include crank revolution data
-byte cscfeature = 2;
-byte powerfeature = 8; // crank revolution
+byte cscMeasurement[5] = { 2 };
+byte powerMeasurement[6] = { 0x20 }; // include crank revolution data
+byte cscFeature = 2;
+byte powerFeature = 8; // crank revolution
 byte powerlocation = 6; // right crank
 
 bool bleConnected = false;
@@ -125,21 +125,19 @@ bool bleConnected = false;
 #define ID(x) (BLEUUID((uint16_t)(x)))
 
 #ifdef CADENCE
-#define speedService ID(0x1816)
+#define CADENCE_UUID ID(0x1816)
 BLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
 BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPERTY_READ);
 
-//BLEDescriptor cscMeasurementDescriptor(ID(0x2901));
 BLEDescriptor cscFeatureDescriptor(ID(0x2901));
 #endif
 
 #ifdef POWER
-#define powerService ID(0x1818)
+#define POWER_UUID ID(0x1818)
 BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic::PROPERTY_NOTIFY);
 BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
 
-//BLEDescriptor powerMeasurementDescriptor(ID(0x2901));
 BLEDescriptor powerFeatureDescriptor(ID(0x2901));
 BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
 #endif
@@ -159,36 +157,40 @@ class MyServerCallbacks:public BLEServerCallbacks
   }
 };
 
-void InitBLE ()
+void InitBLE()
 {
   BLEDevice::init("Exercise Bike Sensor");
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
 
 #ifdef CADENCE
-  BLEService *pSpeed = pServer->createService(speedService);
-  pSpeed->addCharacteristic(&cscMeasurementCharacteristics);
-  pSpeed->addCharacteristic(&cscFeatureCharacteristics);
+  BLEService *pCadence = pServer->createService(CADENCE_UUID);
 
+  pCadence->addCharacteristic(&cscMeasurementCharacteristics);
   cscMeasurementCharacteristics.addDescriptor(new BLE2902());
 
+  pCadence->addCharacteristic(&cscFeatureCharacteristics);
   cscFeatureDescriptor.setValue("CSC Feature");
   cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
+  cscFeatureCharacteristics.setValue(&cscFeature, 1);
 
-  pServer->getAdvertising()->addServiceUUID(speedService);
+  pAdvertising->addServiceUUID(CADENCE_UUID);
 
-  pSpeed->start();
+  pCadence->start();
 #endif
 
 #ifdef POWER
-  BLEService *pPower = pServer->createService(powerService);
-  pPower->addCharacteristic(&powerMeasurementCharacteristics);
-  pPower->addCharacteristic(&powerFeatureCharacteristics);
-  pPower->addCharacteristic(&powerSensorLocationCharacteristics);
+  BLEService *pPower = pServer->createService(POWER_UUID);
 
- // powerMeasurementDescriptor.setValue("Power Measurement");
- // powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
+  pPower->addCharacteristic(&powerMeasurementCharacteristics);
   powerMeasurementCharacteristics.addDescriptor(new BLE2902());
+  
+  pPower->addCharacteristic(&powerFeatureCharacteristics);
+  powerFeatureCharacteristics.setValue(&powerFeature, 1);
+  
+  pPower->addCharacteristic(&powerSensorLocationCharacteristics);
+  powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
 
   powerFeatureDescriptor.setValue("Power Feature");
   powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
@@ -196,15 +198,15 @@ void InitBLE ()
   powerSensorLocationDescriptor.setValue("Power Sensor Location");
   powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
 
-  pServer->getAdvertising()->addServiceUUID(powerService);
+  pAdvertising->addServiceUUID(POWER_UUID);
 
   pPower->start();
 #endif
 
-  pServer->getAdvertising()->setScanResponse(true);
-  pServer->getAdvertising()->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-  pServer->getAdvertising()->setMinPreferred(0x12);
-  pServer->getAdvertising()->start();
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  pAdvertising->start();
 }
 
 void setResistance(uint32_t value) {  
@@ -492,41 +494,27 @@ void loop ()
   if (!bleConnected)
     return;
 
-/*
-  Serial.print(power);
-  Serial.print(" ");
-  Serial.print(lastRotationDuration);
-  Serial.print(" ");
-  Serial.print(crankRevolution);
-  Serial.print(" ");
-  Serial.println(lastCrankRevolution);  */
-
   lastUpdateTime = ms;
 
-  cscmeasurement[1] = crankRevolution;
-  cscmeasurement[2] = crankRevolution >> 8;
+  cscMeasurement[1] = crankRevolution;
+  cscMeasurement[2] = crankRevolution >> 8;
 
-  cscmeasurement[3] = lastCrankRevolution;
-  cscmeasurement[4] = lastCrankRevolution >> 8;
+  cscMeasurement[3] = lastCrankRevolution;
+  cscMeasurement[4] = lastCrankRevolution >> 8;
 
 #ifdef CADENCE
-  cscFeatureCharacteristics.setValue(&cscfeature, 1);
-
-  cscMeasurementCharacteristics.setValue(cscmeasurement, sizeof(cscmeasurement));
+  cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
   cscMeasurementCharacteristics.notify();
 #endif  
 
-  powermeasurement[1] = 0; 
-  powermeasurement[2] = power;
-  powermeasurement[3] = power >> 8;
-  powermeasurement[4] = crankRevolution;
-  powermeasurement[5] = crankRevolution >> 8;
+  powerMeasurement[1] = 0; 
+  powerMeasurement[2] = power;
+  powerMeasurement[3] = power >> 8;
+  powerMeasurement[4] = crankRevolution;
+  powerMeasurement[5] = crankRevolution >> 8;
 
 #ifdef POWER
-  powerFeatureCharacteristics.setValue(&powerfeature, 1);
-  powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
-
-  powerMeasurementCharacteristics.setValue(powermeasurement, sizeof(powermeasurement));
+  powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
   powerMeasurementCharacteristics.notify();
 #endif  
 }
