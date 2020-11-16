@@ -21,14 +21,24 @@ heavily modified by Alexander Pruss
 #define POWER
 #define CADENCE
 //#define LCD5110
-#define LCDHD44780
-#undef TEST
+#define LCD20X4
+#define LIBRARY_HD44780
+#define AVERAGING_ROTATIONS 0
+//#define TEST
 
-#ifdef LCDHD44780
+#ifndef TEST
+const uint32_t rotationDetectPin = 23;
+#endif
+
+#ifdef LCD20X4
+
 #define LCD
-//#include <LiquidCrystal.h>
-#include <hd44780.h>
-#include <hd44780ioClass/hd44780_pinIO.h> // Arduino pin i/o class header
+#ifdef LIBRARY_HD44780
+# include <hd44780.h>
+# include <hd44780ioClass/hd44780_pinIO.h> // Arduino pin i/o class header
+#else
+# include <LiquidCrystal.h>
+#endif
 
 const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
 // 1-16 on LCD board
@@ -45,10 +55,12 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
 // 14 = D7 = GPIO33 = Left from bottom 12
 // 15 = 5V = Left from bottom 1
 // 16 = GND = Left from bottom 6
-//LiquidCrystal 
+#ifdef LIBRARY_HD44780
 hd44780_pinIO
+#else
+LiquidCrystal 
+#endif
 lcd(rs, en, d4, d5, d6, d7);
-
 
 byte bluetooth[8] = {
   B00110, //..XX.
@@ -59,10 +71,6 @@ byte bluetooth[8] = {
   B10101, //X.X.X
   B00110, //..XX.
 };
-#endif
-
-#ifndef TEST
-const uint32_t rotationDetectPin = 23;
 #endif
 
 #ifdef LCD5110
@@ -84,6 +92,13 @@ const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000;
 uint32_t lastRotationDuration = 0;
 uint32_t prevPowerTime = 0;
+#if AVERAGING_ROTATIONS > 0
+struct WindowData {
+    uint64_t millijoules;
+    uint32_t time;
+} windowData[AVERAGING_ROTATIONS];
+uint32_t windowIndex = 0;
+#endif
 
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
@@ -266,7 +281,7 @@ void setup()
   lcd.display();
   lcd.setTextSize(1);
 #endif
-#ifdef LCDHD44780
+#ifdef LCD20X4
   lcd.createChar(1, bluetooth);
   lcd.begin(20,4);
 #endif
@@ -308,7 +323,7 @@ inline uint16_t getTime1024ths(uint32_t ms)
 }
 
 
-#ifdef LCDHD44780
+#ifdef LCD20X4
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
   const unsigned maxDigits = 10;
   char buffer[maxDigits+1];
@@ -354,7 +369,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   pedalledTime /= 60;
   sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
 
-#ifdef LCDHD44780
+#ifdef LCD20X4
 // 01234567890123456789
 // xxxxW xxxrpm xxxxcal
 // #xxxxx Rx B 00:00:00
@@ -425,7 +440,8 @@ void loop ()
 {
   uint8_t rotationDetect;
   uint32_t ms;
-  uint8_t needUpdate;
+  bool needUpdate;
+  bool rotationDetected;
   uint32_t fromLastRotation;
 
   ms = millis();
@@ -446,24 +462,27 @@ void loop ()
 
   checkSaveResistance();
 
-  needUpdate = 0;
-
   uint32_t curRotationDuration = ms - lastReportedRotationTime;
   fromLastRotation = ms - lastRotationDetectTime;
 
   if (rotationDetect && ! prevRotationDetect && fromLastRotation >= rotationDebounceTime) {
     Serial.println("rotation detected at "+String(fromLastRotation));
     lastRotationDuration = curRotationDuration;
-    if (lastReportedRotationTime>0)
+    if (lastReportedRotationTime>0) {
       crankRevolution++;
+    }
+    rotationDetected = true;
     lastReportedRotationTime = ms;
     lastCrankRevolution = getTime1024ths(ms);
-    needUpdate = 1;
+    needUpdate = true;
   }
   else {
+    needUpdate = false;
+    rotationDetected = false;
     if (lastRotationDuration < curRotationDuration)
       lastRotationDuration = curRotationDuration;
   }
+  
   if (rotationDetect)
     lastRotationDetectTime = ms;
 
@@ -478,15 +497,48 @@ void loop ()
     }
   }
 
+#if AVERAGING_ROTATIONS > 0
+  if (rotationDetected) {
+    struct WindowData* wd = windowData + windowIndex;
+    wd->millijoules = millijoules;
+    wd->time = ms;
+    windowIndex = (windowIndex + 1) % AVERAGING_ROTATIONS;
+  }
+#endif
+
   prevPowerTime = ms;
 
   if (ms - lastUpdateTime >= minimumUpdateTime) 
     needUpdate = 1;
 
-  show(crankRevolution-1,power,millijoules/1000,pedalledTime,resistanceValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
-
   if (! needUpdate)
     return;
+
+#if AVERAGING_ROTATIONS > 0
+  uint32_t rpmInWindow;
+  uint32_t powerInWindow;
+  
+  if (crankRevolution < 2) {
+    rpmInWindow = 0;
+    powerInWindow = 0;
+  }
+  else {
+    uint32_t inWindow = crankRevolution >= AVERAGING_ROTATIONS + 1 ? AVERAGING_ROTATIONS : crankRevolution - 1;
+    struct WindowData* wd = windowData + (windowIndex - inWindow + AVERAGING_ROTATIONS) % AVERAGING_ROTATIONS;
+    uint32_t dt = ms-wd->time;
+    if (dt == 0) {
+      powerInWindow = 0;
+      rpmInWindow = 0;
+    }
+    else {
+      powerInWindow = (millijoules-wd->millijoules)/dt; // factors of 1000 cancel out from the MILLIjoules and the MILLIseconds
+      rpmInWindow = 60000 * inWindow / (dt - curRotationDuration + lastRotationDuration); // ??
+    }
+  }
+  show(crankRevolution-1,powerInWindow,millijoules/1000,pedalledTime,resistanceValue+1,rpmInWindow);
+#else
+  show(crankRevolution-1,power,millijoules/1000,pedalledTime,resistanceValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
+#endif  
 
   if (power > 0x7FFF)
     power = 0x7FFF;
