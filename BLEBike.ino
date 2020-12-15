@@ -40,21 +40,24 @@ const uint32_t rotationDetectPin = 23;
 # include <LiquidCrystal.h>
 #endif
 
-const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 25, d7 = 33;
+const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
+#define BACKLIGHT 25
 // 1-16 on LCD board
 // Left / Right on ESP32 with USB port at bottom
-// 1 = GND = Right Top
-// 2 = VCC = Left Top
-// 3 = resistor to GND
+// 1 = GND = Left from bottom 6
+// 2 = VCC = Diode to 5V = Left from bottom 1
+// 3 = short to GND
 // 4 = RS = GPIO12 = Left from bottom 7
 // 5 = RW = GND = Right from top 7
 // 6 = EN = GPIO14 = Left from bottom 8
 // 11 = D4 = GPIO27 = Left from bottom 9
 // 12 = D5 = GPIO26 = Left from bottom 10
-// 13 = D6 = GPIO25 = Left from bottom 11
-// 14 = D7 = GPIO33 = Left from bottom 12
-// 15 = 5V = Left from bottom 1
+// 13 = D6 = GPIO33 = Left from bottom 12
+// 14 = D7 = GPIO32 = Left from bottom 13
+// 15 = GPIO25 = Left from bottom 11
 // 16 = GND = Left from bottom 6
+// Bike GND = GND = Right from top 1
+// Bike Detect = GPIO23 = Right from top 2
 #ifdef LIBRARY_HD44780
 hd44780_pinIO
 #else
@@ -272,7 +275,7 @@ void setup()
 {
 #ifdef LCD5110  
   pinMode(BACKLIGHT, OUTPUT);
-  digitalWrite(BACKLIGHT, 1);
+  digitalWrite(BACKLIGHT, 0);
   lcd.begin(60);
   lcd.clearDisplay();
   lcd.setCursor(1,0);
@@ -282,6 +285,12 @@ void setup()
   lcd.setTextSize(1);
 #endif
 #ifdef LCD20X4
+//  pinMode(BACKLIGHT, OUTPUT);
+//  digitalWrite(BACKLIGHT, 1);
+//  ledcSetup(0,5000,8);
+//  ledcAttachPin(BACKLIGHT,0);
+//  ledcWrite(64,0);
+  dacWrite(BACKLIGHT,210);
   lcd.createChar(1, bluetooth);
   lcd.begin(20,4);
 #endif
@@ -292,7 +301,7 @@ void setup()
   pinMode(rotationDetectPin, INPUT_PULLUP); 
 #endif  
   pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, 1);
+  digitalWrite(ledPin, 0);
   pinMode(0, INPUT);
 
   NVS.begin();
@@ -362,6 +371,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 {
 #ifdef LCD
   char t[32];
+  uint32_t orgTime = pedalledTime;
   pedalledTime /= 1000;
   unsigned sec = pedalledTime % 60;
   pedalledTime /= 60;
@@ -388,6 +398,13 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   if (pedalledTime < 10)
     lcd.write(' ');
   lcd.print(t); 
+  orgTime /= 1000;
+  if (orgTime == 0)
+    return;
+  lcd.setCursor(0,1);
+  printdigits(4, (joules+orgTime/2) / orgTime);
+  lcd.print("  ");
+  printdigits(3, crankRevolution * 60 / orgTime); 
 /*  lcd.setCursor(1,0);
   lcd.print("l1");
   lcd.setCursor(3,0);
@@ -455,7 +472,7 @@ void loop ()
     setResistance((resistanceValue + 1) % NUM_RESISTANCES);
   }
 #ifdef LCD
-  digitalWrite(ledPin, rotationDetect);
+ // digitalWrite(ledPin, rotationDetect);
 #else  
   flashPlay();
 #endif  
