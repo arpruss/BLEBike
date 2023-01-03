@@ -115,10 +115,9 @@ uint32_t lastRotationDetectTime = 0;
 uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
-// resistance model: force = -resistanceCoeff * angularVelocity
-const uint32_t resistanceCoeffX10[] =  {103,157,199,240,333,471,503,574};
-//{ 236, 278, 301, 329, 404, 523, 553, 619 };
-const uint32_t stopRampingResistanceAtRPM=60; // if you're getting RPM above this, you're breaking records or something is wrong; more likely, the latter
+// resistance model: force = -resistanceCoeffRots * rotationsPerTime
+const uint32_t resistanceCoeffRotsX10[] = {441,733,1036,1344,1726,2050,2264,2433};
+
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
 const uint32_t flashPauseDuration = 200;
@@ -312,16 +311,8 @@ void setup()
 uint32_t calculatePower(uint32_t revTimeMillis) {
   if (revTimeMillis == 0)
     return 0;
-// linear resistance:
-  // angularVelocity = 2 * pi / revTime
-  // distance = angularVelocity * r * dt
-  // force = angularVelocity * resistanceCoeff
-  // power = force * distance / dt
-  //       = angularVelocity * resistanceCoeff * distance / dt
-  //       = (2 * pi)^2 * resistanceCoeff * r / revTime^2 
-  // power = (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 + 0.5) * resistanceCoeffX10[resistanceValue] / 10000 * 1000^2 / revTimeMillis^2
-
-  return (uint32_t)( (2 * PI) * (2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffX10[resistanceValue] / revTimeMillis / max(revTimeMillis, 60000 / stopRampingResistanceAtRPM);
+    // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
+  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis;
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
