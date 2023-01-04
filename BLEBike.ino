@@ -115,8 +115,9 @@ uint32_t lastRotationDetectTime = 0;
 uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
-// resistance model: force = -resistanceCoeffRots * rotationsPerTime
+// resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
 const uint32_t resistanceCoeffRotsX10[] = {441,733,1036,1344,1726,2050,2264,2433};
+const uint32_t mechanicalFrictionX10 = 78;
 
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
 
@@ -312,7 +313,8 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
   if (revTimeMillis == 0)
     return 0;
     // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
-  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis;
+  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis +
+         (uint32_t) ((2 * PI) * RADIUSX1000 + 0.5) * mechanicalFrictionX10 / 10000;
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
@@ -375,27 +377,34 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 // xxxxW xxxrpm xxxxcal
 // #xxxxx Rx B 00:00:00
   //lcd.begin(20,(millis()%2000)<1000?1:4);
-  lcd.setCursor(0,0);
+  lcd.home();
   printdigits(4, power);
   lcd.print("W ");
   printdigits(3, rpm);
   lcd.print("rpm ");
   printdigits(4,joules/1000);
-  lcd.print("cal#");
+  lcd.print("cal");
+  lcd.setCursor(0,1);
+  lcd.print("#");
   printdigits(5,crankRevolution,true);
   lcd.print(" R");
   printdigits(1,resistance);
   lcd.print(bleConnected ? " \x01 " : "   ");
   if (pedalledTime < 10)
     lcd.write(' ');
-  lcd.print(t); 
+  lcd.print(t);
+  lcd.clearToEndOfLine(); 
   orgTime /= 1000;
-  if (orgTime == 0)
+  if (orgTime == 0) {
+    lcd.setCursor(0,2);
+    lcd.clearToEndOfLine();
     return;
-  lcd.setCursor(0,1);
+  }
+  lcd.setCursor(0,2);
   printdigits(4, (joules+orgTime/2) / orgTime);
   lcd.print("  ");
   printdigits(3, crankRevolution * 60 / orgTime); 
+  lcd.clearToEndOfLine();
 /*  lcd.setCursor(1,0);
   lcd.print("l1");
   lcd.setCursor(3,0);
