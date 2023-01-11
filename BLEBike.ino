@@ -452,7 +452,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.print(t);
   //lcd.clearToEndOfLine(); 
   orgTime /= 1000;
-  if (orgTime == 0) {
+  if (orgTime == 0 || crankRevolution < 2) {
     //lcd.setCursor(0,2);
     //lcd.clearToEndOfLine();
     return;
@@ -544,7 +544,7 @@ void loop ()
         changeResistance(1);
       }
       else {
-        changeBrightness(8);
+        changeBrightness(5);
         ignoreDecRelease = true;
       }
       break;
@@ -560,7 +560,7 @@ void loop ()
       if (ignoreDecRelease)
         break;
       if (!incState) {
-        changeResistance(-1);
+        changeResistance(-5);
       }
       else {
         changeBrightness(-8);
@@ -581,7 +581,7 @@ void loop ()
     return;
 
   noInterrupts();
-  uint32_t rev = rotationMarkers-1;
+  uint32_t rev = rotationMarkers ? rotationMarkers-1 : 0;
   uint32_t _lastPower = lastPower;
   uint32_t _millijoules = millijoules;
   uint32_t _prevRotationMarker = prevRotationMarker;
