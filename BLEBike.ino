@@ -509,18 +509,15 @@ void loop ()
 
   noInterrupts();
   uint32_t rev = rotationMarkers-1;
-  if (detectedRotation && idling) {      
-    idling = false;
-  }
   uint32_t _lastPower = lastPower;
   uint32_t _millijoules = millijoules;
+  uint32_t _prevRotationMarker = prevRotationMarker;
   if (_prevRotationMarker + idleTime <= t && rev && !detectedRotation) {
       pedalStartTime += t - lastUpdateTime;
   }
   detectedRotation = false;
   uint32_t _pedalStartTime = pedalStartTime;
   uint32_t _lastRotationDuration = lastRotationDuration;
-  uint32_t _prevRotationMarker = prevRotationMarker;
   interrupts();
 
   uint32_t rpm;
