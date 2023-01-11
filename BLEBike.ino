@@ -43,7 +43,7 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 // Left / Right on ESP32 with USB port at bottom
 // 1 = GND -- Left from bottom 6
 // 2 = VCC -- 5V = Left from bottom 1 (perhaps via diode?)
-// 3 -- short to GND
+// 3 -- contrast pot wiper (right goes to + and left goes to GND)
 // 4 = RS -- GPIO12 = Left from bottom 7, with pulldown resistor to GND (4.7k works)
 // 5 = RW -- GND = Right from top 7
 // 6 = EN -- GPIO14 = Left from bottom 8
@@ -55,6 +55,8 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 // 16 = GND -- Left from bottom 6
 // Bike GND -- GND = Right from top 1
 // Bike Detect -- GPIO23 = Right from top 2
+// GND - switch - GPIO0 = Right from bottom 6
+// GND - switch - GPIO4 = Right from bottom 7
 
 #ifdef LIBRARY_HD44780
 hd44780_pinIO
@@ -86,12 +88,18 @@ static Adafruit_PCD8544 lcd(14,13,27,15,26);
 
 const uint32_t ledPin = 2;
 const uint32_t incPin = 0;
+const uint32_t decPin = 4; 
 Debounce incButton(incPin, LOW);
+Debounce decButton(decPin, LOW);
+bool ignoreIncRelease = false;
+bool ignoreDecRelease = false;
 const uint8_t defaultRotationMarkerValue = 1; // this is what is there most of the time
 uint8_t cleanRotationMarkerState = defaultRotationMarkerValue; // most likely
 const uint32_t rotationMarkerDebounceTime = 20;
 const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000; 
+bool incState = false;
+bool decState = false;
 
 uint32_t prevRotationMarker = 0;
 uint32_t rotationMarkers = 0;
@@ -128,6 +136,8 @@ char flashPatterns[][NUM_RESISTANCES*2+2] = { "10D", "1010D", "101010D", "101010
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
+byte brightnessValue = 208;
+byte savedBrightnessValue = 208;
 byte cscMeasurement[5] = { 2 };
 byte powerMeasurement[6] = { 0x20 }; // include crank revolution data
 byte cscFeature = 2;
@@ -229,6 +239,11 @@ void setResistance(uint32_t value) {
     flashStartTime = millis();
 }
 
+void setBrightness(uint8_t value) {
+    brightnessValue = value;
+    dacWrite(BACKLIGHT, brightnessValue);
+}
+
 void flashPlay() {
   if (flashPattern == NULL) {
     digitalWrite(ledPin, 0);
@@ -291,8 +306,8 @@ void IRAM_ATTR rotationISR() {
 
   uint32_t t = millis();
 
-  if (t < lastBounce + 20) {
-    lastBounce = rotationMarkerDebounceTime;
+  if (t < lastBounce + rotationMarkerDebounceTime) {
+    lastBounce = t;
     return;
   }
 
@@ -337,11 +352,13 @@ void setup()
 //  ledcSetup(0,5000,8);
 //  ledcAttachPin(BACKLIGHT,0);
 //  ledcWrite(64,0);
-  dacWrite(BACKLIGHT,210);
+  dacWrite(BACKLIGHT,brightnessValue);
   lcd.createChar(1, bluetooth);
   lcd.begin(20,4);
   lcd.print("BLEBike");
 #endif
+  pinMode(incPin, INPUT_PULLUP);
+  pinMode(decPin, INPUT_PULLUP);
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
@@ -359,6 +376,10 @@ void setup()
   NVS.begin();
   setResistance(NVS.getInt("res", 0));
   savedResistanceValue = resistanceValue;
+#ifdef LCD20X4
+  setBrightness(NVS.getInt("bright", 208));
+  savedBrightnessValue = brightnessValue;
+#endif  
 }
 
 #ifdef LCD20X4
@@ -481,26 +502,78 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 lcd.home();
 }
 
-void checkSaveResistance() {
+void checkSave() {
   static uint32_t lastSavedTime = 0;
-  if (resistanceValue == savedResistanceValue)
+  if (resistanceValue == savedResistanceValue && brightnessValue == savedBrightnessValue)
     return;
   if ((millis() - lastSavedTime) < 4000)
     return; // reduce wear by not saving right away
-  NVS.setInt("res", resistanceValue);
-  savedResistanceValue = resistanceValue;
+  if (resistanceValue != savedResistanceValue) {
+    NVS.setInt("res", resistanceValue);
+    savedResistanceValue = resistanceValue;
+  }
+  if (brightnessValue != savedBrightnessValue) {
+    NVS.setInt("bright", brightnessValue);
+    savedBrightnessValue = brightnessValue;
+  }
   lastSavedTime = millis();
 }
 
+void changeResistance(int32_t delta) {
+  setResistance((resistanceValue + delta + NUM_RESISTANCES) % NUM_RESISTANCES);
+}
 
+void changeBrightness(int32_t delta) {
+  int32_t nb = (int32_t)brightnessValue + delta;
+  if (nb < 0)
+    setBrightness(0);
+  else if (nb > 255)
+    setBrightness(255);
+  else
+    setBrightness(nb);
+}
 
 void loop ()
 {
-  if (incButton.getEvent() == DEBOUNCE_PRESSED) {
-    setResistance((resistanceValue + 1) % NUM_RESISTANCES);
+  switch(incButton.getEvent()) {
+    case DEBOUNCE_RELEASED:
+      incState = false;
+      if (ignoreIncRelease)
+        break;
+      if (!decState) {
+        changeResistance(1);
+      }
+      else {
+        changeBrightness(8);
+        ignoreDecRelease = true;
+      }
+      break;
+    case DEBOUNCE_PRESSED:
+      incState = true;
+      ignoreIncRelease = false;
+      break;
   }
 
-  checkSaveResistance();
+  switch(decButton.getEvent()) {
+    case DEBOUNCE_RELEASED:
+      decState = false;
+      if (ignoreDecRelease)
+        break;
+      if (!incState) {
+        changeResistance(-1);
+      }
+      else {
+        changeBrightness(-8);
+        ignoreIncRelease = true;
+      }
+      break;
+    case DEBOUNCE_PRESSED:
+      decState = true;
+      ignoreDecRelease = false;
+      break;
+  }
+
+  checkSave();
 
   uint32_t t = millis();
 
