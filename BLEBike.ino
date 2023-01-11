@@ -87,10 +87,11 @@ static Adafruit_PCD8544 lcd(14,13,27,15,26);
 const uint32_t ledPin = 2;
 const uint32_t incPin = 0;
 Debounce incButton(incPin, LOW);
-const uint8_t defaultRotationValue = 1;
-const uint32_t rotationDebounceTime = 100;
+const uint8_t defaultRotationMarkerValue = 1; // this is what is there most of the time
+uint8_t cleanRotationMarkerState = defaultRotationMarkerValue; // most likely
+const uint32_t rotationMarkerDebounceTime = 20;
 const uint32_t minimumUpdateTime = 250;
-const uint32_t idleTime = 4000;
+const uint32_t idleTime = 4000; 
 
 uint32_t prevRotationMarker = 0;
 uint32_t rotationMarkers = 0;
@@ -98,8 +99,7 @@ uint32_t lastRotationDuration = 0;
 uint32_t lastPower = 0;
 uint32_t pedalStartTime = 0;
 bool detectedRotation = false;
-
-
+uint32_t lastBounce = 0;
 
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
@@ -267,10 +267,44 @@ void flashPlay() {
   flashStartTime = millis(); // rewind
 }
 
+uint32_t calculatePower(uint32_t revTimeMillis) {
+  if (revTimeMillis == 0)
+    return 0;
+    // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
+  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis +
+         (uint32_t) ((2 * PI) * RADIUSX1000 + 0.5) * mechanicalFrictionX10 / 10000;
+}
+
+inline uint16_t getTime1024ths(uint32_t ms) 
+{
+  // TODO: there will be a glitch every 4.66 hours
+  ms &= 0x00FFFFFFul;
+  return ms * 128/125;
+}
+
+
+
+
 void IRAM_ATTR rotationISR() {
-  uint32_t t = millis();
-  if (t < prevRotationMarker + rotationDebounceTime)
+  if (digitalRead(rotationDetectPin) == cleanRotationMarkerState)
     return;
+
+  uint32_t t = millis();
+
+  if (t < lastBounce + 20) {
+    lastBounce = rotationMarkerDebounceTime;
+    return;
+  }
+
+  lastBounce = t;
+
+  cleanRotationMarkerState = ! cleanRotationMarkerState;
+
+  if (cleanRotationMarkerState != defaultRotationMarkerValue)
+    return; 
+  // trigger on end of marker
+  // TODO: figure out if the debounce algorithm is solid
+      
   if (rotationMarkers > 0) {
     lastRotationDuration = t - prevRotationMarker;
     lastPower = calculatePower(lastRotationDuration);
@@ -313,32 +347,19 @@ void setup()
   InitBLE();
 #ifndef TEST  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
-  attachInterrupt(rotationDetectPin, rotationISR, RISING);
+  // it would be better to trigger on FALLING or on RISING, but the debounce would be tricky,
+  // and neither FALLING or RISING trigger seems reliable: https://github.com/espressif/arduino-esp32/issues/1111
+  attachInterrupt(rotationDetectPin, rotationISR, CHANGE);
 #endif  
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 0);
   pinMode(0, INPUT);
+  cleanRotationMarkerState = digitalRead(rotationDetectPin);
 
   NVS.begin();
   setResistance(NVS.getInt("res", 0));
   savedResistanceValue = resistanceValue;
 }
-
-uint32_t calculatePower(uint32_t revTimeMillis) {
-  if (revTimeMillis == 0)
-    return 0;
-    // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
-  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis +
-         (uint32_t) ((2 * PI) * RADIUSX1000 + 0.5) * mechanicalFrictionX10 / 10000;
-}
-
-inline uint16_t getTime1024ths(uint32_t ms) 
-{
-  // TODO: there will be a glitch every 4.66 hours
-  ms &= 0x00FFFFFFul;
-  return ms * 128/125;
-}
-
 
 #ifdef LCD20X4
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
@@ -457,6 +478,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.display();
 #endif  
 #endif
+lcd.home();
 }
 
 void checkSaveResistance() {
@@ -485,13 +507,17 @@ void loop ()
   if (! detectedRotation && lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
     return;
 
-  Serial.println("updating");
-
   noInterrupts();
-  detectedRotation = false;
   uint32_t rev = rotationMarkers-1;
+  if (detectedRotation && idling) {      
+    idling = false;
+  }
   uint32_t _lastPower = lastPower;
   uint32_t _millijoules = millijoules;
+  if (_prevRotationMarker + idleTime <= t && rev && !detectedRotation) {
+      pedalStartTime += t - lastUpdateTime;
+  }
+  detectedRotation = false;
   uint32_t _pedalStartTime = pedalStartTime;
   uint32_t _lastRotationDuration = lastRotationDuration;
   uint32_t _prevRotationMarker = prevRotationMarker;
