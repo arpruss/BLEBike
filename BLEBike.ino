@@ -23,16 +23,13 @@ heavily modified by Alexander Pruss
 //#define LCD5110
 #define LCD20X4
 #define LIBRARY_HD44780
-#define AVERAGING_ROTATIONS 0
 //#define TEST
 
-#ifndef TEST
 const uint32_t rotationDetectPin = 23;
-#endif
 
 #ifdef LCD20X4
-
 #define LCD
+
 #ifdef LIBRARY_HD44780
 # include <hd44780.h>
 # include <hd44780ioClass/hd44780_pinIO.h> // Arduino pin i/o class header
@@ -44,20 +41,21 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 #define BACKLIGHT 25
 // 1-16 on LCD board
 // Left / Right on ESP32 with USB port at bottom
-// 1 = GND = Left from bottom 6
-// 2 = VCC = Diode to 5V = Left from bottom 1
-// 3 = short to GND
-// 4 = RS = GPIO12 = Left from bottom 7
-// 5 = RW = GND = Right from top 7
-// 6 = EN = GPIO14 = Left from bottom 8
-// 11 = D4 = GPIO27 = Left from bottom 9
-// 12 = D5 = GPIO26 = Left from bottom 10
-// 13 = D6 = GPIO33 = Left from bottom 12
-// 14 = D7 = GPIO32 = Left from bottom 13
-// 15 = GPIO25 = Left from bottom 11
-// 16 = GND = Left from bottom 6
-// Bike GND = GND = Right from top 1
-// Bike Detect = GPIO23 = Right from top 2
+// 1 = GND -- Left from bottom 6
+// 2 = VCC -- 5V = Left from bottom 1 (perhaps via diode?)
+// 3 -- short to GND
+// 4 = RS -- GPIO12 = Left from bottom 7, with pulldown resistor to GND (4.7k works)
+// 5 = RW -- GND = Right from top 7
+// 6 = EN -- GPIO14 = Left from bottom 8
+// 11 = D4 -- GPIO27 = Left from bottom 9
+// 12 = D5 -- GPIO26 = Left from bottom 10
+// 13 = D6 -- GPIO33 = Left from bottom 12
+// 14 = D7 -- GPIO32 = Left from bottom 13
+// 15 = GPIO25 -- Left from bottom 11
+// 16 = GND -- Left from bottom 6
+// Bike GND -- GND = Right from top 1
+// Bike Detect -- GPIO23 = Right from top 2
+
 #ifdef LIBRARY_HD44780
 hd44780_pinIO
 #else
@@ -93,15 +91,15 @@ const uint8_t defaultRotationValue = 1;
 const uint32_t rotationDebounceTime = 100;
 const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000;
+
+uint32_t prevRotationMarker = 0;
+uint32_t rotationMarkers = 0;
 uint32_t lastRotationDuration = 0;
-uint32_t prevPowerTime = 0;
-#if AVERAGING_ROTATIONS > 0
-struct WindowData {
-    uint64_t millijoules;
-    uint32_t time;
-} windowData[AVERAGING_ROTATIONS];
-uint32_t windowIndex = 0;
-#endif
+uint32_t lastPower = 0;
+uint32_t pedalStartTime = 0;
+bool detectedRotation = false;
+
+
 
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
@@ -110,13 +108,11 @@ uint32_t lastReportedRotationTime = 0;
 uint16_t lastCrankRevolution = 0; // in 1024ths of a second!
 uint16_t crankRevolution = 0;
 
-uint16_t prevRotationDetect = 0;
-uint32_t lastRotationDetectTime = 0;
 uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
 // resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
-const uint32_t resistanceCoeffRotsX10[] = {441,733,1036,1344,1726,2050,2264,2433};
+const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {441,733,1036,1344,1726,2050,2264,2433};
 const uint32_t mechanicalFrictionX10 = 78;
 
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
@@ -271,6 +267,23 @@ void flashPlay() {
   flashStartTime = millis(); // rewind
 }
 
+void IRAM_ATTR rotationISR() {
+  uint32_t t = millis();
+  if (t < prevRotationMarker + rotationDebounceTime)
+    return;
+  if (rotationMarkers > 0) {
+    lastRotationDuration = t - prevRotationMarker;
+    lastPower = calculatePower(lastRotationDuration);
+    millijoules += lastPower * lastRotationDuration;
+  }
+  else {
+    pedalStartTime = t;
+  }
+  rotationMarkers++;
+  prevRotationMarker = t;
+  detectedRotation = true;
+}
+
 void setup()
 {
 #ifdef LCD5110  
@@ -293,12 +306,14 @@ void setup()
   dacWrite(BACKLIGHT,210);
   lcd.createChar(1, bluetooth);
   lcd.begin(20,4);
+  lcd.print("BLEBike");
 #endif
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
 #ifndef TEST  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
+  attachInterrupt(rotationDetectPin, rotationISR, RISING);
 #endif  
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 0);
@@ -378,13 +393,13 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 // #xxxxx Rx B 00:00:00
   //lcd.begin(20,(millis()%2000)<1000?1:4);
   lcd.home();
+  printdigits(4,joules/1000);
+  lcd.print("cal ");
   printdigits(4, power);
   lcd.print("W ");
   printdigits(3, rpm);
   lcd.print("rpm ");
-  printdigits(4,joules/1000);
-  lcd.print("cal");
-  lcd.setCursor(0,1);
+  lcd.setCursor(0,3);
   lcd.print("#");
   printdigits(5,crankRevolution,true);
   lcd.print(" R");
@@ -393,18 +408,20 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   if (pedalledTime < 10)
     lcd.write(' ');
   lcd.print(t);
-  lcd.clearToEndOfLine(); 
+  //lcd.clearToEndOfLine(); 
   orgTime /= 1000;
   if (orgTime == 0) {
-    lcd.setCursor(0,2);
-    lcd.clearToEndOfLine();
+    //lcd.setCursor(0,2);
+    //lcd.clearToEndOfLine();
     return;
   }
-  lcd.setCursor(0,2);
+  lcd.setCursor(0,1);
+  lcd.print("   avg: ");
   printdigits(4, (joules+orgTime/2) / orgTime);
-  lcd.print("  ");
+  lcd.print("W ");
   printdigits(3, crankRevolution * 60 / orgTime); 
-  lcd.clearToEndOfLine();
+  lcd.print("rpm");
+  //lcd.clearToEndOfLine();
 /*  lcd.setCursor(1,0);
   lcd.print("l1");
   lcd.setCursor(3,0);
@@ -453,120 +470,50 @@ void checkSaveResistance() {
   lastSavedTime = millis();
 }
 
+
+
 void loop ()
 {
-  uint8_t rotationDetect;
-  uint32_t ms;
-  bool needUpdate;
-  bool rotationDetected;
-  uint32_t fromLastRotation;
-
-  ms = millis();
-
-#ifdef TEST
-  rotationDetect = (ms % 1000) < 200;
-#else  
-  rotationDetect = digitalRead(rotationDetectPin) ^ defaultRotationValue;
-#endif
   if (incButton.getEvent() == DEBOUNCE_PRESSED) {
     setResistance((resistanceValue + 1) % NUM_RESISTANCES);
   }
-#ifdef LCD
- // digitalWrite(ledPin, rotationDetect);
-#else  
-  flashPlay();
-#endif  
 
   checkSaveResistance();
 
-  uint32_t curRotationDuration = ms - lastReportedRotationTime;
-  fromLastRotation = ms - lastRotationDetectTime;
+  uint32_t t = millis();
 
-  if (rotationDetect && ! prevRotationDetect && fromLastRotation >= rotationDebounceTime) {
-    Serial.println("rotation detected at "+String(fromLastRotation));
-    lastRotationDuration = curRotationDuration;
-    if (lastReportedRotationTime>0) {
-      crankRevolution++;
-    }
-    rotationDetected = true;
-    lastReportedRotationTime = ms;
-    lastCrankRevolution = getTime1024ths(ms);
-    needUpdate = true;
-  }
-  else {
-    needUpdate = false;
-    rotationDetected = false;
-    if (lastRotationDuration < curRotationDuration)
-      lastRotationDuration = curRotationDuration;
-  }
-  
-  if (rotationDetect)
-    lastRotationDetectTime = ms;
-
-  prevRotationDetect = rotationDetect;
-
-  uint32_t power = crankRevolution >= 2 ? calculatePower(lastRotationDuration) : 0;
-
-  if (prevPowerTime > 0 && crankRevolution >= 1) {
-    millijoules += power * (ms - prevPowerTime);
-    if (lastRotationDuration < idleTime) {
-      pedalledTime += ms - prevPowerTime;
-    }
-  }
-
-#if AVERAGING_ROTATIONS > 0
-  if (rotationDetected) {
-    struct WindowData* wd = windowData + windowIndex;
-    wd->millijoules = millijoules;
-    wd->time = ms;
-    windowIndex = (windowIndex + 1) % AVERAGING_ROTATIONS;
-  }
-#endif
-
-  prevPowerTime = ms;
-
-  if (ms - lastUpdateTime >= minimumUpdateTime) 
-    needUpdate = 1;
-
-  if (! needUpdate)
+  if (! detectedRotation && lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
     return;
 
-#if AVERAGING_ROTATIONS > 0
-  uint32_t rpmInWindow;
-  uint32_t powerInWindow;
+  Serial.println("updating");
+
+  noInterrupts();
+  detectedRotation = false;
+  uint32_t rev = rotationMarkers-1;
+  uint32_t _lastPower = lastPower;
+  uint32_t _millijoules = millijoules;
+  uint32_t _pedalStartTime = pedalStartTime;
+  uint32_t _lastRotationDuration = lastRotationDuration;
+  uint32_t _prevRotationMarker = prevRotationMarker;
+  interrupts();
+
+  uint32_t rpm;
+  uint32_t _power = _lastPower;
+  if (!rev || _lastRotationDuration == 0)
+    rpm = 0;
+  else if (_lastRotationDuration < t - prevRotationMarker) {
+    rpm = 60000 / (t - prevRotationMarker);
+    _power = calculatePower(t - prevRotationMarker);
+  }
+  else 
+    rpm = 60000 / _lastRotationDuration;
+
+  show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
+
+  cscMeasurement[1] = rev;
+  cscMeasurement[2] = rev >> 8;
   
-  if (crankRevolution < 2) {
-    rpmInWindow = 0;
-    powerInWindow = 0;
-  }
-  else {
-    uint32_t inWindow = crankRevolution >= AVERAGING_ROTATIONS + 1 ? AVERAGING_ROTATIONS : crankRevolution - 1;
-    struct WindowData* wd = windowData + (windowIndex - inWindow + AVERAGING_ROTATIONS) % AVERAGING_ROTATIONS;
-    uint32_t dt = ms-wd->time;
-    if (dt == 0) {
-      powerInWindow = 0;
-      rpmInWindow = 0;
-    }
-    else {
-      powerInWindow = (millijoules-wd->millijoules)/dt; // factors of 1000 cancel out from the MILLIjoules and the MILLIseconds
-      rpmInWindow = 60000 * inWindow / (dt - curRotationDuration + lastRotationDuration); // ??
-    }
-  }
-  show(crankRevolution-1,powerInWindow,millijoules/1000,pedalledTime,resistanceValue+1,rpmInWindow);
-#else
-  show(crankRevolution-1,power,millijoules/1000,pedalledTime,resistanceValue+1,crankRevolution>=2 ? (60000/lastRotationDuration) : 0);
-#endif  
-
-  if (power > 0x7FFF)
-    power = 0x7FFF;
-
-  if (!bleConnected)
-    return;
-
-  lastUpdateTime = ms;
-
-  cscMeasurement[1] = crankRevolution;
-  cscMeasurement[2] = crankRevolution >> 8;
+  uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);
 
   cscMeasurement[3] = lastCrankRevolution;
   cscMeasurement[4] = lastCrankRevolution >> 8;
@@ -577,14 +524,16 @@ void loop ()
 #endif  
 
   powerMeasurement[1] = 0; 
-  powerMeasurement[2] = power;
-  powerMeasurement[3] = power >> 8;
-  powerMeasurement[4] = crankRevolution;
-  powerMeasurement[5] = crankRevolution >> 8;
+  powerMeasurement[2] = _lastPower;
+  powerMeasurement[3] = _lastPower >> 8;
+  powerMeasurement[4] = rev;
+  powerMeasurement[5] = rev >> 8;
 
 #ifdef POWER
   powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
   powerMeasurementCharacteristics.notify();
 #endif  
+
+  lastUpdateTime = t;
 }
 
