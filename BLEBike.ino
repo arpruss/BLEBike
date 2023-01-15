@@ -20,15 +20,9 @@ heavily modified by Alexander Pruss
 
 #define POWER
 #define CADENCE
-//#define LCD5110
-#define LCD20X4
 #define LIBRARY_HD44780
-//#define TEST
 
 const uint32_t rotationDetectPin = 23;
-
-#ifdef LCD20X4
-#define LCD
 
 #ifdef LIBRARY_HD44780
 # include <hd44780.h>
@@ -41,18 +35,20 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 #define BACKLIGHT 25
 // 1-16 on LCD board
 // Left / Right on ESP32 with USB port at bottom
+// Positions of pins may differ on your board.
+// GND = Left from bottom 6, Right from top 7, Right from top 1
 // 1 = GND -- Left from bottom 6
 // 2 = VCC -- 5V = Left from bottom 1 (perhaps via diode?)
-// 3 -- contrast pot wiper (right goes to + and left goes to GND)
+// 3 -- contrast pot wiper: right goes to +5V and left goes to GND
 // 4 = RS -- GPIO12 = Left from bottom 7 -- 4.7k -- GND
-// 5 = RW -- GND = Right from top 7
+// 5 = RW -- GND
 // 6 = EN -- GPIO14 = Left from bottom 8
 // 11 = D4 -- GPIO27 = Left from bottom 9
 // 12 = D5 -- GPIO26 = Left from bottom 10
 // 13 = D6 -- GPIO33 = Left from bottom 12
 // 14 = D7 -- GPIO32 = Left from bottom 13
 // 15 = GPIO25 -- Left from bottom 11
-// 16 = GND -- Left from bottom 6
+// 16 = GND
 // Bike GND -- GND = Right from top 1
 // Bike Detect -- GPIO23 = Right from top 2
 // GND -- switch -- GPIO0 = Right from bottom 6
@@ -73,18 +69,8 @@ byte bluetooth[8] = {
   B01110, //.XXX.
   B10101, //X.X.X
   B00110, //..XX.
+  B00000, //.....
 };
-#endif
-
-#ifdef LCD5110
-#include <Adafruit_GFX.h>
-#include <Adafruit_PCD8544.h>
-
-#define BACKLIGHT 25
-#define LCD
-// int8_t SCLK, int8_t DIN, int8_t DC, int8_t CS, int8_t RST
-static Adafruit_PCD8544 lcd(14,13,27,15,26); 
-#endif
 
 const uint32_t ledPin = 2;
 const uint32_t incPin = 0;
@@ -93,6 +79,7 @@ Debounce incButton(incPin, LOW);
 Debounce decButton(decPin, LOW);
 bool ignoreIncRelease = false;
 bool ignoreDecRelease = false;
+bool needToClear = true;
 const uint8_t defaultRotationMarkerValue = 1; // this is what is there most of the time
 uint8_t cleanRotationMarkerState = defaultRotationMarkerValue; // most likely
 const uint32_t rotationMarkerDebounceTime = 20;
@@ -112,28 +99,15 @@ uint32_t lastBounce = 0;
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
 
-uint32_t lastReportedRotationTime = 0;
-uint16_t lastCrankRevolution = 0; // in 1024ths of a second!
-uint16_t crankRevolution = 0;
-
 uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
-#define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
+#define RADIUSX1000 149 // radius of crank in meters * 1000 (= radius of crank in mm)
 #define MECHANICAL_FRICTION (9.8 * 0.8) // mechanical friction as measured
 // resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
 const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {285,544,802,1052,1393,1671,1873,1969};
 const uint32_t _2_pi_r_100000 = (uint32_t) (2 * PI * RADIUSX1000 * 100 + 0.5);
 const uint32_t mechanicalPart1000 = (uint32_t)(2 * PI * RADIUSX1000 * MECHANICAL_FRICTION + 0.5);
-
-const uint32_t flashPauseDuration = 200;
-const uint32_t flashPlayDuration = 200;
-const uint32_t flashDelayDuration = 2000;
-
-char* flashPattern = NULL;
-uint32_t flashStartTime = 0;
-
-char flashPatterns[][NUM_RESISTANCES*2+2] = { "10D", "1010D", "101010D", "10101010D", "1010101010D", "101010101010D", "10101010101010D", "1010101010101010D" };
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
@@ -184,7 +158,7 @@ class MyServerCallbacks:public BLEServerCallbacks
 
 void InitBLE()
 {
-  BLEDevice::init("Exercise Bike Sensor");
+  BLEDevice::init("Omega Centauri BLEBike");
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -236,51 +210,11 @@ void InitBLE()
 
 void setResistance(uint32_t value) {  
     resistanceValue = value;
-    flashPattern = flashPatterns[value];
-    flashStartTime = millis();
 }
 
 void setBrightness(uint8_t value) {
     brightnessValue = value;
     dacWrite(BACKLIGHT, brightnessValue);
-}
-
-void flashPlay() {
-  if (flashPattern == NULL) {
-    digitalWrite(ledPin, 0);
-    return;
-  }
-  char* p = flashPattern;
-  uint32_t currentTime = millis() - flashStartTime;
-  bool active = false;
-  uint32_t duration = 0;
-  uint32_t t = 0;
-  while(*p) {
-    switch(*p) {
-      case '0':
-        active = false;
-        duration = flashPauseDuration;
-        break;
-      case '1':
-        active = true;
-        duration = flashPlayDuration;
-        break;
-      case 'D':
-        active = false;
-        duration = flashDelayDuration;
-        break;
-      default:
-        duration = 0;
-        active = false;
-    }
-    if (currentTime < t + duration) {
-      digitalWrite(ledPin, active);
-      return;
-    }
-    t += duration;
-    p++;
-  }  
-  flashStartTime = millis(); // rewind
 }
 
 uint32_t calculatePower(uint32_t revTimeMillis) {
@@ -335,54 +269,33 @@ void IRAM_ATTR rotationISR() {
 
 void setup()
 {
-#ifdef LCD5110  
   pinMode(BACKLIGHT, OUTPUT);
-  digitalWrite(BACKLIGHT, 0);
-  lcd.begin(60);
-  lcd.clearDisplay();
-  lcd.setCursor(1,0);
-  lcd.setTextSize(2);
-  lcd.print("BLE\nBike");
-  lcd.display();
-  lcd.setTextSize(1);
-#endif
-#ifdef LCD20X4
-//  pinMode(BACKLIGHT, OUTPUT);
-//  digitalWrite(BACKLIGHT, 1);
-//  ledcSetup(0,5000,8);
-//  ledcAttachPin(BACKLIGHT,0);
-//  ledcWrite(64,0);
   dacWrite(BACKLIGHT,brightnessValue);
-  lcd.createChar(1, bluetooth);
   lcd.begin(20,4);
+  lcd.createChar(1, bluetooth);
   lcd.print("BLEBike");
-#endif
+  lcd.setCursor(0,1);
+  lcd.print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
-#ifndef TEST  
-  pinMode(rotationDetectPin, INPUT_PULLUP); 
+  pinMode(rotationDetectPin, INPUT); //_PULLUP); // TODO: why pullup?
   // it would be better to trigger on FALLING or on RISING, but the debounce would be tricky,
   // and neither FALLING or RISING trigger seems reliable: https://github.com/espressif/arduino-esp32/issues/1111
   attachInterrupt(rotationDetectPin, rotationISR, CHANGE);
-#endif  
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 0);
-  pinMode(0, INPUT);
   cleanRotationMarkerState = digitalRead(rotationDetectPin);
 
   NVS.begin();
   setResistance(NVS.getInt("res", 0));
   savedResistanceValue = resistanceValue;
-#ifdef LCD20X4
   setBrightness(NVS.getInt("bright", 208));
   savedBrightnessValue = brightnessValue;
-#endif  
 }
 
-#ifdef LCD20X4
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
   const unsigned maxDigits = 10;
   char buffer[maxDigits+1];
@@ -415,11 +328,14 @@ void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
   }
   lcd.print(p);
 }
-#endif
 
 void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t resistance, uint32_t rpm)
 {
-#ifdef LCD
+  if (needToClear) {
+    lcd.clear();
+    needToClear = false;
+  }
+  
   char t[32];
   uint32_t orgTime = pedalledTime;
   pedalledTime /= 1000;
@@ -429,11 +345,9 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   pedalledTime /= 60;
   sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
 
-#ifdef LCD20X4
 // 01234567890123456789
 // xxxxW xxxrpm xxxxcal
 // #xxxxx Rx B 00:00:00
-  //lcd.begin(20,(millis()%2000)<1000?1:4);
   lcd.home();
   printdigits(4,joules/1000);
   lcd.print("cal ");
@@ -450,11 +364,8 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   if (pedalledTime < 10)
     lcd.write(' ');
   lcd.print(t);
-  //lcd.clearToEndOfLine(); 
   orgTime /= 1000;
   if (orgTime == 0 || crankRevolution < 2) {
-    //lcd.setCursor(0,2);
-    //lcd.clearToEndOfLine();
     return;
   }
   lcd.setCursor(0,1);
@@ -463,43 +374,6 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   lcd.print("W ");
   printdigits(3, crankRevolution * 60 / orgTime); 
   lcd.print("rpm");
-  //lcd.clearToEndOfLine();
-/*  lcd.setCursor(1,0);
-  lcd.print("l1");
-  lcd.setCursor(3,0);
-  lcd.print("l3"); */
-#endif
-
-#ifdef LCD5110   
-  static bool initialized = false;
-
-  if (! initialized) {
-    lcd.setCursor(0,0);
-    lcd.println("Rev");
-    lcd.println("Power");
-    lcd.println("KCal");
-    lcd.println("Time");
-    lcd.println("RPM");
-    lcd.println("Resis");
-  }
-  uint32_t y = 0;
-  const uint32_t x = 40-6;
-  lcd.setCursor(x,y);
-  lcd.print(crankRevolution);
-  lcd.setCursor(x,y+=8);
-  lcd.print(String(power)+"W");
-  lcd.setCursor(x,y+=8);
-  lcd.println(String(joules/1000));
-  lcd.setCursor(x,y+=8);
-  lcd.println(t);
-  lcd.setCursor(x,y+=8);
-  lcd.println(String(rpm)+"    ");
-  lcd.setCursor(x,y+=8);
-  lcd.println(String(resistance)+" ");
-  lcd.display();
-#endif  
-#endif
-lcd.home();
 }
 
 void checkSave() {
@@ -532,6 +406,8 @@ void changeBrightness(int32_t delta) {
   else
     setBrightness(nb);
 }
+
+uint32_t prevRev = -1;
 
 void loop ()
 {
@@ -580,7 +456,9 @@ void loop ()
   if (! detectedRotation && lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
     return;
 
+
   noInterrupts();
+  bool updateCadence = detectedRotation;
   uint32_t rev = rotationMarkers ? rotationMarkers-1 : 0;
   uint32_t _lastPower = lastPower;
   uint32_t _millijoules = millijoules;
@@ -606,6 +484,17 @@ void loop ()
 
   show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
 
+  powerMeasurement[1] = 0; 
+  powerMeasurement[2] = _lastPower;
+  powerMeasurement[3] = _lastPower >> 8;
+  powerMeasurement[4] = rev;
+  powerMeasurement[5] = rev >> 8;
+
+#ifdef POWER
+  powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
+  powerMeasurementCharacteristics.notify();
+#endif  
+
   cscMeasurement[1] = rev;
   cscMeasurement[2] = rev >> 8;
   
@@ -618,18 +507,7 @@ void loop ()
   cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
   cscMeasurementCharacteristics.notify();
 #endif  
-
-  powerMeasurement[1] = 0; 
-  powerMeasurement[2] = _lastPower;
-  powerMeasurement[3] = _lastPower >> 8;
-  powerMeasurement[4] = rev;
-  powerMeasurement[5] = rev >> 8;
-
-#ifdef POWER
-  powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
-  powerMeasurementCharacteristics.notify();
-#endif  
-
+  
   lastUpdateTime = t;
 }
 
