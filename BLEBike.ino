@@ -44,7 +44,7 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 // 1 = GND -- Left from bottom 6
 // 2 = VCC -- 5V = Left from bottom 1 (perhaps via diode?)
 // 3 -- contrast pot wiper (right goes to + and left goes to GND)
-// 4 = RS -- GPIO12 = Left from bottom 7, with pulldown resistor to GND (4.7k works)
+// 4 = RS -- GPIO12 = Left from bottom 7 -- 4.7k -- GND
 // 5 = RW -- GND = Right from top 7
 // 6 = EN -- GPIO14 = Left from bottom 8
 // 11 = D4 -- GPIO27 = Left from bottom 9
@@ -55,8 +55,8 @@ const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 // 16 = GND -- Left from bottom 6
 // Bike GND -- GND = Right from top 1
 // Bike Detect -- GPIO23 = Right from top 2
-// GND - switch - GPIO0 = Right from bottom 6
-// GND - switch - GPIO4 = Right from bottom 7
+// GND -- switch -- GPIO0 = Right from bottom 6
+// GND -- switch -- GPIO4 = Right from bottom 7
 
 #ifdef LIBRARY_HD44780
 hd44780_pinIO
@@ -119,11 +119,12 @@ uint16_t crankRevolution = 0;
 uint32_t lastUpdateTime = 0;
 
 #define NUM_RESISTANCES 8
-// resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
-const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {441,733,1036,1344,1726,2050,2264,2433};
-const uint32_t mechanicalFrictionX10 = 78;
-
 #define RADIUSX1000 145 // radius of crank in meters * 1000 (= radius of crank in mm)
+#define MECHANICAL_FRICTION (9.8 * 0.8) // mechanical friction as measured
+// resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
+const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {285,544,802,1052,1393,1671,1873,1969};
+const uint32_t _2_pi_r_100000 = (uint32_t) (2 * PI * RADIUSX1000 * 100 + 0.5);
+const uint32_t mechanicalPart1000 = (uint32_t)(2 * PI * RADIUSX1000 * MECHANICAL_FRICTION + 0.5);
 
 const uint32_t flashPauseDuration = 200;
 const uint32_t flashPlayDuration = 200;
@@ -286,8 +287,7 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
   if (revTimeMillis == 0)
     return 0;
     // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
-  return (uint32_t) ((2 * PI) * RADIUSX1000 * 100 + 0.5) * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis / revTimeMillis +
-         (uint32_t) ((2 * PI) * RADIUSX1000 + 0.5) * mechanicalFrictionX10 / 10000;
+  return (_2_pi_r_100000 * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis + mechanicalPart1000 + revTimeMillis/2) / revTimeMillis;
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
@@ -560,10 +560,10 @@ void loop ()
       if (ignoreDecRelease)
         break;
       if (!incState) {
-        changeResistance(-5);
+        changeResistance(-1);
       }
       else {
-        changeBrightness(-8);
+        changeBrightness(-5);
         ignoreIncRelease = true;
       }
       break;
