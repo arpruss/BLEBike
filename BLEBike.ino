@@ -19,7 +19,7 @@ heavily modified by Alexander Pruss
 #include "debounce.h"
 
 #define POWER
-#define CADENCE
+//#define CADENCE
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT
 
@@ -115,7 +115,7 @@ byte savedResistanceValue = 0;
 byte brightnessValue = 208;
 byte savedBrightnessValue = 208;
 byte cscMeasurement[5] = { 2 };
-byte powerMeasurement[6] = { 0x20 }; // include crank revolution data
+byte powerMeasurement[8] = { 1<<5 }; // include crank revolution data
 byte cscFeature = 2;
 byte powerFeature = 8; // crank revolution
 byte powerlocation = 6; // right crank
@@ -412,8 +412,6 @@ void changeBrightness(int32_t delta) {
     setBrightness(nb);
 }
 
-uint32_t prevRev = -1;
-
 void loop ()
 {
   switch(incButton.getEvent()) {
@@ -489,11 +487,15 @@ void loop ()
 
   show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
 
-  powerMeasurement[1] = 0; 
+  uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);
+
+//  powerMeasurement[1] = 0; 
   powerMeasurement[2] = _lastPower;
   powerMeasurement[3] = _lastPower >> 8;
   powerMeasurement[4] = rev;
   powerMeasurement[5] = rev >> 8;
+  powerMeasurement[6] = lastCrankRevolution;
+  powerMeasurement[7] = lastCrankRevolution >> 8;
 
 #ifdef POWER
   powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
@@ -503,8 +505,6 @@ void loop ()
   cscMeasurement[1] = rev;
   cscMeasurement[2] = rev >> 8;
   
-  uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);
-
   cscMeasurement[3] = lastCrankRevolution;
   cscMeasurement[4] = lastCrankRevolution >> 8;
 
@@ -512,7 +512,7 @@ void loop ()
   cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
   cscMeasurementCharacteristics.notify();
 #endif  
-  
+
   lastUpdateTime = t;
 }
 
