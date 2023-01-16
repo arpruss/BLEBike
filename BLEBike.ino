@@ -20,6 +20,7 @@ heavily modified by Alexander Pruss
 
 #define POWER
 #define CADENCE
+//#define WHEEL
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT
 
@@ -104,6 +105,11 @@ uint32_t pedalledTime = 0;
 
 uint32_t lastUpdateTime = 0;
 
+#ifdef WHEEL
+const uint32_t gearRatio1 = 1; // gearRatio1:gearRatio2 = wheel rotations:crank rotations
+const uint32_t gearRatio2 = 2; 
+#endif
+
 #define NUM_RESISTANCES 8
 #define RADIUSX1000 149 // radius of crank in meters * 1000 (= radius of crank in mm)
 #define MECHANICAL_FRICTION (9.8 * 0.8) // mechanical friction as measured
@@ -116,10 +122,48 @@ byte resistanceValue = 0;
 byte savedResistanceValue = 0;
 byte brightnessValue = 208;
 byte savedBrightnessValue = 208;
-byte cscMeasurement[5] = { 2 };
-byte powerMeasurement[8] = { 1<<5 }; // include crank revolution data
-byte cscFeature = 2; // crank revolution
-byte powerFeature = 8; // crank revolution
+// https://github.com/sputnikdev/bluetooth-gatt-parser/blob/master/src/main/resources/gatt/characteristic/org.bluetooth.characteristic.csc_measurement.xml
+
+struct CSCMeasurement_t {
+  uint8_t flags; // bit 0: wheel data present; bit 1: crank data present
+#ifdef WHEEL  
+  uint32_t wheelRevolutions;
+  uint16_t lastWheelEvent;
+#endif  
+  uint16_t crankRevolutions;
+  uint16_t lastCrankEvent;
+} __packed;
+CSCMeasurement_t cscMeasurement = { .flags = (1<<1) // crank data
+#ifdef WHEEL
+  |(1<<0)
+#endif
+};
+struct PowerMeasurement_t {
+  uint16_t flags; // bit 4: wheel data present; bit 5: crank data present
+  int16_t instantaneousPower;
+#ifdef WHEEL  
+  uint32_t wheelRevolutions;
+  uint16_t lastWheelEvent;
+#endif  
+  uint16_t crankRevolutions;
+  uint16_t lastCrankEvent;
+} __packed;
+PowerMeasurement_t powerMeasurement = { .flags = 
+  (1<<5) // crank data
+#ifdef WHEEL
+  |(1<<4) // wheel data
+#endif  
+}; 
+byte cscFeature = 2 // crank revolution
+#ifdef WHEEL
+ |1
+#endif
+; 
+byte powerFeature = 8 // crank revolution
+#ifdef WHEEL
+ |4
+#endif
+;
 byte powerlocation = 6; // right crank
 
 bool bleConnected = false;
@@ -504,30 +548,32 @@ void loop ()
 
   uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);
 
-//  powerMeasurement[1] = 0; 
-  powerMeasurement[2] = _lastPower;
-  powerMeasurement[3] = _lastPower >> 8;
-  powerMeasurement[4] = rev;
-  powerMeasurement[5] = rev >> 8;
-  powerMeasurement[6] = lastCrankRevolution;
-  powerMeasurement[7] = lastCrankRevolution >> 8;
+  powerMeasurement.instantaneousPower = _lastPower;
+  powerMeasurement.crankRevolutions = rev;
+  powerMeasurement.lastCrankEvent = lastCrankRevolution;
+#ifdef WHEEL
+  uint32_t wheelRevolutions = rev * gearRatio1 / gearRatio2;
+  powerMeasurement.wheelRevolutions = wheelRevolutions;
+  powerMeasurement.lastWheelEvent = lastCrankRevolution; // TODO: make better
+#endif      
 
 #ifdef POWER
   if (powerEnabled) {
-    powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
+    powerMeasurementCharacteristics.setValue((uint8_t*)&powerMeasurement, sizeof(powerMeasurement));
     powerMeasurementCharacteristics.notify();
   }
 #endif  
 
-  cscMeasurement[1] = rev;
-  cscMeasurement[2] = rev >> 8;
-  
-  cscMeasurement[3] = lastCrankRevolution;
-  cscMeasurement[4] = lastCrankRevolution >> 8;
+  cscMeasurement.crankRevolutions = rev;
+  cscMeasurement.lastCrankEvent = lastCrankRevolution;
+#ifdef WHEEL  
+  cscMeasurement.wheelRevolutions = wheelRevolutions;
+  cscMeasurement.lastWheelEvent = lastCrankRevolution; // TODO: make better
+#endif  
 
 #ifdef CADENCE
   if (cadenceEnabled) {
-    cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
+    cscMeasurementCharacteristics.setValue((uint8_t*)&cscMeasurement, sizeof(cscMeasurement));
     cscMeasurementCharacteristics.notify();
   }
 #endif  
