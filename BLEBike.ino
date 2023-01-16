@@ -263,9 +263,15 @@ void InitBLE()
   }
 #endif
 
+  BLEAdvertisementData data;
+  data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
+  data.setName("BLEBike");
+
+  pAdvertising->setScanResponseData(data);
+  //pAdvertising->setAdvertisementData(data);  
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-  pAdvertising->setMinPreferred(0x12);
+  pAdvertising->setMaxPreferred(0x12);
   pAdvertising->start();
 }
 
