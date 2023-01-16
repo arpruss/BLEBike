@@ -7,7 +7,7 @@ Kolban example.
 Based on Neil Kolban example for IDF:
 https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleServer.cpp
 Ported to Arduino ESP32 by Evandro Copercini
-updates by chegewara
+updates by chegewarax`
 heavily modified by Alexander Pruss
 */
 
@@ -19,7 +19,7 @@ heavily modified by Alexander Pruss
 #include "debounce.h"
 
 #define POWER
-//#define CADENCE
+#define CADENCE
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT
 
@@ -88,6 +88,8 @@ const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000; 
 bool incState = false;
 bool decState = false;
+bool cadenceEnabled = true;
+bool powerEnabled = true;
 
 uint32_t prevRotationMarker = 0;
 uint32_t rotationMarkers = 0;
@@ -116,11 +118,12 @@ byte brightnessValue = 208;
 byte savedBrightnessValue = 208;
 byte cscMeasurement[5] = { 2 };
 byte powerMeasurement[8] = { 1<<5 }; // include crank revolution data
-byte cscFeature = 2;
+byte cscFeature = 2; // crank revolution
 byte powerFeature = 8; // crank revolution
 byte powerlocation = 6; // right crank
 
 bool bleConnected = false;
+BLEServer *pServer;
 
 #define ID(x) (BLEUUID((uint16_t)(x)))
 
@@ -153,54 +156,62 @@ class MyServerCallbacks:public BLEServerCallbacks
   void onDisconnect(BLEServer* pServer)
   {
     Serial.println("disconnected");
+    pServer->startAdvertising();
     bleConnected = false;
   }
 };
 
 void InitBLE()
 {
-  BLEDevice::init("Omega Centauri BLEBike");
-  BLEServer *pServer = BLEDevice::createServer();
+  if (!powerEnabled && !cadenceEnabled)
+    return;
+  
+  BLEDevice::init("OmegaCentauri BLEBike");
+  pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
 
 #ifdef CADENCE
-  BLEService *pCadence = pServer->createService(CADENCE_UUID);
-
-  pCadence->addCharacteristic(&cscMeasurementCharacteristics);
-  cscMeasurementCharacteristics.addDescriptor(new BLE2902());
-
-  pCadence->addCharacteristic(&cscFeatureCharacteristics);
-  cscFeatureDescriptor.setValue("CSC Feature");
-  cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
-  cscFeatureCharacteristics.setValue(&cscFeature, 1);
-
-  pAdvertising->addServiceUUID(CADENCE_UUID);
-
-  pCadence->start();
+  if (cadenceEnabled) {
+    BLEService *pCadence = pServer->createService(CADENCE_UUID);
+  
+    pCadence->addCharacteristic(&cscMeasurementCharacteristics);
+    cscMeasurementCharacteristics.addDescriptor(new BLE2902());
+  
+    pCadence->addCharacteristic(&cscFeatureCharacteristics);
+    cscFeatureDescriptor.setValue("CSC Feature");
+    cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
+    cscFeatureCharacteristics.setValue(&cscFeature, 1);
+  
+    pAdvertising->addServiceUUID(CADENCE_UUID);
+  
+    pCadence->start();
+  }
 #endif
 
 #ifdef POWER
-  BLEService *pPower = pServer->createService(POWER_UUID);
-
-  pPower->addCharacteristic(&powerMeasurementCharacteristics);
-  powerMeasurementCharacteristics.addDescriptor(new BLE2902());
+  if (powerEnabled) {
+    BLEService *pPower = pServer->createService(POWER_UUID);
   
-  pPower->addCharacteristic(&powerFeatureCharacteristics);
-  powerFeatureCharacteristics.setValue(&powerFeature, 1);
+    pPower->addCharacteristic(&powerMeasurementCharacteristics);
+    powerMeasurementCharacteristics.addDescriptor(new BLE2902());
+    
+    pPower->addCharacteristic(&powerFeatureCharacteristics);
+    powerFeatureCharacteristics.setValue(&powerFeature, 1);
+    
+    pPower->addCharacteristic(&powerSensorLocationCharacteristics);
+    powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
   
-  pPower->addCharacteristic(&powerSensorLocationCharacteristics);
-  powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
-
-  powerFeatureDescriptor.setValue("Power Feature");
-  powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
-
-  powerSensorLocationDescriptor.setValue("Power Sensor Location");
-  powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
-
-  pAdvertising->addServiceUUID(POWER_UUID);
-
-  pPower->start();
+    powerFeatureDescriptor.setValue("Power Feature");
+    powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
+  
+    powerSensorLocationDescriptor.setValue("Power Sensor Location");
+    powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
+  
+    pAdvertising->addServiceUUID(POWER_UUID);
+  
+    pPower->start();
+  }
 #endif
 
   pAdvertising->setScanResponse(true);
@@ -279,6 +290,10 @@ void setup()
   lcd.print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
+//  if (!digitalRead(incPin))
+//    cadenceEnabled = false;
+  if (!digitalRead(decPin))
+    powerEnabled = false;
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
@@ -498,8 +513,10 @@ void loop ()
   powerMeasurement[7] = lastCrankRevolution >> 8;
 
 #ifdef POWER
-  powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
-  powerMeasurementCharacteristics.notify();
+  if (powerEnabled) {
+    powerMeasurementCharacteristics.setValue(powerMeasurement, sizeof(powerMeasurement));
+    powerMeasurementCharacteristics.notify();
+  }
 #endif  
 
   cscMeasurement[1] = rev;
@@ -509,8 +526,10 @@ void loop ()
   cscMeasurement[4] = lastCrankRevolution >> 8;
 
 #ifdef CADENCE
-  cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
-  cscMeasurementCharacteristics.notify();
+  if (cadenceEnabled) {
+    cscMeasurementCharacteristics.setValue(cscMeasurement, sizeof(cscMeasurement));
+    cscMeasurementCharacteristics.notify();
+  }
 #endif  
 
   lastUpdateTime = t;
