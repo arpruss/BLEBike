@@ -21,6 +21,7 @@ heavily modified by Alexander Pruss
 #define POWER
 #define CADENCE
 #define LIBRARY_HD44780
+#define PULLUP_ON_ROTATION_DETECT
 
 const uint32_t rotationDetectPin = 23;
 
@@ -281,7 +282,11 @@ void setup()
   Serial.begin(115200);
   Serial.println("BLEBike start");
   InitBLE();
-  pinMode(rotationDetectPin, INPUT); //_PULLUP); // TODO: why pullup?
+#ifdef PULLUP_ON_ROTATION_DETECT  
+  pinMode(rotationDetectPin, INPUT_PULLUP); 
+#else
+  pinMode(rotationDetectPin, INPUT); 
+#endif  
   // it would be better to trigger on FALLING or on RISING, but the debounce would be tricky,
   // and neither FALLING or RISING trigger seems reliable: https://github.com/espressif/arduino-esp32/issues/1111
   attachInterrupt(rotationDetectPin, rotationISR, CHANGE);
