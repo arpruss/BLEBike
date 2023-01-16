@@ -174,19 +174,20 @@ BLEServer *pServer;
 #ifdef CADENCE
 #define CADENCE_UUID ID(0x1816)
 BLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
+BLE2902 cscMeasurementDescriptor; //Client Characteristic Descriptor
 BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPERTY_READ);
-
-BLEDescriptor cscFeatureDescriptor(ID(0x2901));
+//BLEDescriptor cscFeatureDescriptor(ID(0x2901));
 #endif
 
 #ifdef POWER
 #define POWER_UUID ID(0x1818)
 BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic::PROPERTY_NOTIFY);
+BLE2902 powerMeasurementDescriptor; // (ID(0x2902)); //Client Characteristic Descriptor
 BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
 
-BLEDescriptor powerFeatureDescriptor(ID(0x2901));
-BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
+//BLEDescriptor powerFeatureDescriptor(ID(0x2901));
+//BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
 #endif
 
 class MyServerCallbacks:public BLEServerCallbacks
@@ -220,11 +221,13 @@ void InitBLE()
     BLEService *pCadence = pServer->createService(CADENCE_UUID);
   
     pCadence->addCharacteristic(&cscMeasurementCharacteristics);
-    cscMeasurementCharacteristics.addDescriptor(new BLE2902());
+//    cscMeasurementDescriptor.setValue("CSC Measurement");
+    cscMeasurementDescriptor.setNotifications(true);
+    cscMeasurementCharacteristics.addDescriptor(&cscMeasurementDescriptor);
   
     pCadence->addCharacteristic(&cscFeatureCharacteristics);
-    cscFeatureDescriptor.setValue("CSC Feature");
-    cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
+//    cscFeatureDescriptor.setValue("CSC Feature");
+//    cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
     cscFeatureCharacteristics.setValue(&cscFeature, 1);
   
     pAdvertising->addServiceUUID(CADENCE_UUID);
@@ -238,7 +241,9 @@ void InitBLE()
     BLEService *pPower = pServer->createService(POWER_UUID);
   
     pPower->addCharacteristic(&powerMeasurementCharacteristics);
-    powerMeasurementCharacteristics.addDescriptor(new BLE2902());
+//    powerMeasurementDescriptor.setValue("Power Measurement");
+    powerMeasurementDescriptor.setNotifications(true);
+    powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
     
     pPower->addCharacteristic(&powerFeatureCharacteristics);
     powerFeatureCharacteristics.setValue(&powerFeature, 1);
@@ -246,11 +251,11 @@ void InitBLE()
     pPower->addCharacteristic(&powerSensorLocationCharacteristics);
     powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
   
-    powerFeatureDescriptor.setValue("Power Feature");
-    powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
+//    powerFeatureDescriptor.setValue("Power Feature");
+//    powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
   
-    powerSensorLocationDescriptor.setValue("Power Sensor Location");
-    powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
+//    powerSensorLocationDescriptor.setValue("Power Sensor Location");
+//    powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
   
     pAdvertising->addServiceUUID(POWER_UUID);
   
