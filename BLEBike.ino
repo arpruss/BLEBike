@@ -20,10 +20,11 @@ heavily modified by Alexander Pruss
 
 #define POWER
 #define CADENCE
-//#define WHEEL
+//#define WHEEL // WHEEL requires Cycling Power Control Point, which is not currently implemented
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT
 
+#define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
 
 #ifdef LIBRARY_HD44780
@@ -122,6 +123,7 @@ byte resistanceValue = 0;
 byte savedResistanceValue = 0;
 byte brightnessValue = 208;
 byte savedBrightnessValue = 208;
+
 // https://github.com/sputnikdev/bluetooth-gatt-parser/blob/master/src/main/resources/gatt/characteristic/org.bluetooth.characteristic.csc_measurement.xml
 
 struct CSCMeasurement_t {
@@ -138,6 +140,7 @@ CSCMeasurement_t cscMeasurement = { .flags = (1<<1) // crank data
   |(1<<0)
 #endif
 };
+
 struct PowerMeasurement_t {
   uint16_t flags; // bit 4: wheel data present; bit 5: crank data present
   int16_t instantaneousPower;
@@ -182,10 +185,9 @@ BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPE
 #ifdef POWER
 #define POWER_UUID ID(0x1818)
 BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic::PROPERTY_NOTIFY);
-BLE2902 powerMeasurementDescriptor; // (ID(0x2902)); //Client Characteristic Descriptor
+BLE2902 powerMeasurementDescriptor; //Client Characteristic Descriptor
 BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
-
 //BLEDescriptor powerFeatureDescriptor(ID(0x2901));
 //BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
 #endif
@@ -201,7 +203,8 @@ class MyServerCallbacks:public BLEServerCallbacks
   void onDisconnect(BLEServer* pServer)
   {
     Serial.println("disconnected");
-    pServer->startAdvertising();
+    BLEDevice::startAdvertising();
+//    pServer->startAdvertising();
     bleConnected = false;
   }
 };
@@ -211,7 +214,7 @@ void InitBLE()
   if (!powerEnabled && !cadenceEnabled)
     return;
   
-  BLEDevice::init("OmegaCentauri BLEBike");
+  BLEDevice::init("OmegaCentauri " DEVICE_NAME);
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -265,14 +268,16 @@ void InitBLE()
 
   BLEAdvertisementData data;
   data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
-  data.setName("BLEBike");
+  data.setName(DEVICE_NAME);
 
   pAdvertising->setScanResponseData(data);
   //pAdvertising->setAdvertisementData(data);  
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
   pAdvertising->setMaxPreferred(0x12);
-  pAdvertising->start();
+  BLEDevice::startAdvertising();
+//  pAdvertising->start();
+
 }
 
 void setResistance(uint32_t value) {  
@@ -556,6 +561,9 @@ void loop ()
     rpm = 60000 / _lastRotationDuration;
 
   show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
+
+  if (!bleConnected)
+    return;
 
   uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);
 
