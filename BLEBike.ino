@@ -1,14 +1,5 @@
 /*
-Multi BLE Sensor - Richard Hedderly 2019
-
-Based on heart sensor code by Andreas Spiess which was based on a Neil
-Kolban example.
-
-Based on Neil Kolban example for IDF:
-https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleServer.cpp
-Ported to Arduino ESP32 by Evandro Copercini
-updates by chegewarax`
-heavily modified by Alexander Pruss
+ * MIT License
 */
 
 #include <BLEDevice.h>
@@ -20,9 +11,9 @@ heavily modified by Alexander Pruss
 
 #define POWER
 #define CADENCE
-//#define WHEEL // WHEEL requires Cycling Power Control Point, which is not currently implemented
+//#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
-#define PULLUP_ON_ROTATION_DETECT
+#define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
@@ -121,10 +112,11 @@ const uint32_t mechanicalPart1000 = (uint32_t)(2 * PI * RADIUSX1000 * MECHANICAL
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
-byte brightnessValue = 208;
-byte savedBrightnessValue = 208;
+const byte defaultBrightnessValue = 205;
+byte brightnessValue;
+byte savedBrightnessValue;
 
-// https://github.com/sputnikdev/bluetooth-gatt-parser/blob/master/src/main/resources/gatt/characteristic/org.bluetooth.characteristic.csc_measurement.xml
+// references: https://github.com/sputnikdev/bluetooth-gatt-parser/blob/master/src/main/resources/gatt/characteristic/
 
 struct CSCMeasurement_t {
   uint8_t flags; // bit 0: wheel data present; bit 1: crank data present
@@ -144,33 +136,33 @@ CSCMeasurement_t cscMeasurement = { .flags = (1<<1) // crank data
 struct PowerMeasurement_t {
   uint16_t flags; // bit 4: wheel data present; bit 5: crank data present
   int16_t instantaneousPower;
-#ifdef WHEEL  
-  uint32_t wheelRevolutions;
-  uint16_t lastWheelEvent;
-#endif  
+// WHEEL would require the unsupported control point  
+//#ifdef WHEEL  
+//  uint32_t wheelRevolutions;
+//  uint16_t lastWheelEvent;
+//#endif  
   uint16_t crankRevolutions;
   uint16_t lastCrankEvent;
 } __packed;
 PowerMeasurement_t powerMeasurement = { .flags = 
   (1<<5) // crank data
-#ifdef WHEEL
-  |(1<<4) // wheel data
-#endif  
+//#ifdef WHEEL
+//  |(1<<4) // wheel data
+//#endif  
 }; 
 byte cscFeature = 2 // crank revolution
 #ifdef WHEEL
  |1
 #endif
 ; 
-byte powerFeature = 8 // crank revolution
-#ifdef WHEEL
- |4
-#endif
+uint32_t powerFeature = 8 // crank revolution
+//#ifdef WHEEL
+// |4
+//#endif
 ;
 byte powerlocation = 6; // right crank
 
 bool bleConnected = false;
-BLEServer *pServer;
 
 #define ID(x) (BLEUUID((uint16_t)(x)))
 
@@ -179,7 +171,6 @@ BLEServer *pServer;
 BLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
 BLE2902 cscMeasurementDescriptor; //Client Characteristic Descriptor
 BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPERTY_READ);
-//BLEDescriptor cscFeatureDescriptor(ID(0x2901));
 #endif
 
 #ifdef POWER
@@ -188,8 +179,6 @@ BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic:
 BLE2902 powerMeasurementDescriptor; //Client Characteristic Descriptor
 BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
-//BLEDescriptor powerFeatureDescriptor(ID(0x2901));
-//BLEDescriptor powerSensorLocationDescriptor(ID(0x2901));
 #endif
 
 class MyServerCallbacks:public BLEServerCallbacks
@@ -204,7 +193,6 @@ class MyServerCallbacks:public BLEServerCallbacks
   {
     Serial.println("disconnected");
     BLEDevice::startAdvertising();
-//    pServer->startAdvertising();
     bleConnected = false;
   }
 };
@@ -214,8 +202,8 @@ void InitBLE()
   if (!powerEnabled && !cadenceEnabled)
     return;
   
-  BLEDevice::init("OmegaCentauri " DEVICE_NAME);
-  pServer = BLEDevice::createServer();
+  BLEDevice::init("Omega Centauri " DEVICE_NAME);
+  BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
 
@@ -224,13 +212,9 @@ void InitBLE()
     BLEService *pCadence = pServer->createService(CADENCE_UUID);
   
     pCadence->addCharacteristic(&cscMeasurementCharacteristics);
-//    cscMeasurementDescriptor.setValue("CSC Measurement");
-    cscMeasurementDescriptor.setNotifications(true);
     cscMeasurementCharacteristics.addDescriptor(&cscMeasurementDescriptor);
   
     pCadence->addCharacteristic(&cscFeatureCharacteristics);
-//    cscFeatureDescriptor.setValue("CSC Feature");
-//    cscFeatureCharacteristics.addDescriptor(&cscFeatureDescriptor);
     cscFeatureCharacteristics.setValue(&cscFeature, 1);
   
     pAdvertising->addServiceUUID(CADENCE_UUID);
@@ -243,22 +227,14 @@ void InitBLE()
   if (powerEnabled) {
     BLEService *pPower = pServer->createService(POWER_UUID);
   
-    pPower->addCharacteristic(&powerMeasurementCharacteristics);
-//    powerMeasurementDescriptor.setValue("Power Measurement");
-    powerMeasurementDescriptor.setNotifications(true);
     powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
+    pPower->addCharacteristic(&powerMeasurementCharacteristics);
     
     pPower->addCharacteristic(&powerFeatureCharacteristics);
-    powerFeatureCharacteristics.setValue(&powerFeature, 1);
+    powerFeatureCharacteristics.setValue((uint8_t*)&powerFeature, sizeof(powerFeature));
     
     pPower->addCharacteristic(&powerSensorLocationCharacteristics);
     powerSensorLocationCharacteristics.setValue(&powerlocation, 1);  
-  
-//    powerFeatureDescriptor.setValue("Power Feature");
-//    powerFeatureCharacteristics.addDescriptor(&powerFeatureDescriptor);
-  
-//    powerSensorLocationDescriptor.setValue("Power Sensor Location");
-//    powerSensorLocationCharacteristics.addDescriptor(&powerSensorLocationDescriptor);
   
     pAdvertising->addServiceUUID(POWER_UUID);
   
@@ -271,12 +247,10 @@ void InitBLE()
   data.setName(DEVICE_NAME);
 
   pAdvertising->setScanResponseData(data);
-  //pAdvertising->setAdvertisementData(data);  
   pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x06);  // functions that allegedly help with iPhone connections issue
   pAdvertising->setMaxPreferred(0x12);
   BLEDevice::startAdvertising();
-//  pAdvertising->start();
 
 }
 
@@ -302,9 +276,6 @@ inline uint16_t getTime1024ths(uint32_t ms)
   ms &= 0x00FFFFFFul;
   return ms * 128/125;
 }
-
-
-
 
 void IRAM_ATTR rotationISR() {
   if (digitalRead(rotationDetectPin) == cleanRotationMarkerState)
@@ -372,7 +343,7 @@ void setup()
   NVS.begin();
   setResistance(NVS.getInt("res", 0));
   savedResistanceValue = resistanceValue;
-  setBrightness(NVS.getInt("bright", 208));
+  setBrightness(NVS.getInt("bright", defaultBrightnessValue));
   savedBrightnessValue = brightnessValue;
 }
 
@@ -570,10 +541,10 @@ void loop ()
   powerMeasurement.instantaneousPower = _lastPower;
   powerMeasurement.crankRevolutions = rev;
   powerMeasurement.lastCrankEvent = lastCrankRevolution;
-#ifdef WHEEL
+#ifdef WHEEL  
   uint32_t wheelRevolutions = rev * gearRatio1 / gearRatio2;
-  powerMeasurement.wheelRevolutions = wheelRevolutions;
-  powerMeasurement.lastWheelEvent = lastCrankRevolution; // TODO: make better
+//  powerMeasurement.wheelRevolutions = wheelRevolutions;
+//  powerMeasurement.lastWheelEvent = lastCrankRevolution; // TODO: make better
 #endif      
 
 #ifdef POWER
