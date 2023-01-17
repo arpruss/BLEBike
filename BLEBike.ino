@@ -104,11 +104,22 @@ const uint32_t gearRatio2 = 2;
 
 #define NUM_RESISTANCES 8
 #define RADIUSX1000 149 // radius of crank in meters * 1000 (= radius of crank in mm)
-#define MECHANICAL_FRICTION (9.8 * 0.8) // mechanical friction as measured
+
+#define FV(x) (uint32_t)(2 * PI * RADIUSX1000 * (x) + 0.5)
+
+//#define MECHANICAL_FRICTION_BIKE
+#ifdef MECHANICAL_FRICTION_BIKE
+// resistance model: force = - mechanicalFriction
+const uint32_t mechanicalPartsX1000[NUM_RESISTANCES] = 
+   { FV(7.5),FV(15.5),FV(20.5),FV(35.5),FV(50.5),FV(70.4),FV(70.9),FV(90.3) };
+   // replace the numbers by your mechanical friction values in Newtons
+#else
 // resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
-const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {285,544,802,1052,1393,1671,1873,1969};
+// The following are the k values from https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
+const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {285,544,802,1052,1393,1671,1873,1969}; 
 const uint32_t _2_pi_r_100000 = (uint32_t) (2 * PI * RADIUSX1000 * 100 + 0.5);
-const uint32_t mechanicalPart1000 = (uint32_t)(2 * PI * RADIUSX1000 * MECHANICAL_FRICTION + 0.5);
+const uint32_t mechanicalPartX1000 = FV( 7.84 );   // mechanical friction measured at 7.84 Newtons
+#endif
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
@@ -267,7 +278,11 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
   if (revTimeMillis == 0)
     return 0;
     // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
-  return (_2_pi_r_100000 * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis + mechanicalPart1000 + revTimeMillis/2) / revTimeMillis;
+#ifdef MECHANICAL_RESISTANCE_BIKE
+  return (mechanicalPartX1000[resistanceValue] + revTimeMillis/2) / revTimeMillis;
+#else    
+  return (_2_pi_r_100000 * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis + mechanicalPartX1000 + revTimeMillis/2) / revTimeMillis;
+#endif  
 }
 
 inline uint16_t getTime1024ths(uint32_t ms) 
