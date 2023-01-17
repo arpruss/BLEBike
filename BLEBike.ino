@@ -13,7 +13,7 @@
 #define CADENCE
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
-#define PULLUP_ON_ROTATION_DETECT // handy for debugging
+//#define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
@@ -505,7 +505,6 @@ void loop ()
   if (! detectedRotation && lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
     return;
 
-
   noInterrupts();
   bool updateCadence = detectedRotation;
   uint32_t rev = rotationMarkers ? rotationMarkers-1 : 0;
@@ -532,6 +531,8 @@ void loop ()
     rpm = 60000 / _lastRotationDuration;
 
   show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
+
+  lastUpdateTime = t;
 
   if (!bleConnected)
     return;
@@ -567,7 +568,5 @@ void loop ()
     cscMeasurementCharacteristics.notify();
   }
 #endif  
-
-  lastUpdateTime = t;
 }
 
