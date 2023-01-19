@@ -25,6 +25,9 @@ const uint32_t rotationDetectPin = 23;
 # include <LiquidCrystal.h>
 #endif
 
+#define COLS 20
+#define ROWS 4
+
 const int rs = 12, en = 14, d4 = 27, d5 = 26, d6 = 33, d7 = 32;
 #define BACKLIGHT 25
 // 1-16 on LCD board
@@ -74,26 +77,30 @@ Debounce decButton(decPin, LOW);
 bool ignoreIncRelease = false;
 bool ignoreDecRelease = false;
 bool needToClear = true;
+unsigned curX = 0;
+unsigned curY = 0;
 const uint8_t defaultRotationMarkerValue = 1; // this is what is there most of the time
 uint8_t cleanRotationMarkerState = defaultRotationMarkerValue; // most likely
 const uint32_t rotationMarkerDebounceTime = 20;
 const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000; 
-bool incState = false;
-bool decState = false;
+const uint32_t longPressTime = 2000;
 bool cadenceEnabled = true;
 bool powerEnabled = true;
+bool showPeleton = true;
+bool updateBluetooth = false;
 
 uint32_t prevRotationMarker = 0;
 uint32_t rotationMarkers = 0;
 uint32_t lastRotationDuration = 0;
 uint32_t lastPower = 0;
 uint32_t pedalStartTime = 0;
+uint64_t millijoules = 0;
+uint32_t pedalledTime = 0;
+
 bool detectedRotation = false;
 uint32_t lastBounce = 0;
 
-uint64_t millijoules = 0;
-uint32_t pedalledTime = 0;
 
 uint32_t lastUpdateTime = 0;
 
@@ -107,19 +114,25 @@ const uint32_t gearRatio2 = 2;
 
 #define FV(x) (uint32_t)(2 * PI * RADIUSX1000 * (x) + 0.5)
 
+// compile-time calculations are down with floating point, but run-time calculation are all integer
 //#define MECHANICAL_FRICTION_BIKE
 #ifdef MECHANICAL_FRICTION_BIKE
 // resistance model: force = - mechanicalFriction
 const uint32_t mechanicalPartsX1000[NUM_RESISTANCES] = 
    { FV(7.5),FV(15.5),FV(20.5),FV(35.5),FV(50.5),FV(70.4),FV(70.9),FV(90.3) };
    // replace the numbers by your mechanical friction values in Newtons
+#define WATTS(rpm,i) ( mechanicalPartsX1000[(i)] / 1000. * (rpm)/60. )
 #else
 // resistance model: force = - resistanceCoeffRots * rotationsPerTime - mechanicalFriction
 // The following are the k values from https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
+// multiplied by a factor of 10.
 const uint32_t resistanceCoeffRotsX10[NUM_RESISTANCES] = {285,544,802,1052,1393,1671,1873,1969}; 
 const uint32_t _2_pi_r_100000 = (uint32_t) (2 * PI * RADIUSX1000 * 100 + 0.5);
 const uint32_t mechanicalPartX1000 = FV( 7.84 );   // mechanical friction measured at 7.84 Newtons
+#define WATTS(rpm,i) ( (2 * PI * (RADIUSX1000/1000.) * (rpm)/60. * ( resistanceCoeffRotsX10[(i)]/10.*(rpm)/60.)) + mechanicalPartX1000/1000. * (rpm)/60.)
 #endif
+#define PEQ(i) (uint32_t)( ( (86.6+WATTS(60,(i)))/3.98 + (183.1+WATTS(80,(i)))/7.78 + (279.1+WATTS(100,(i)))/11.73) / 3 + 0.5 )
+const uint32_t peletonResistances[NUM_RESISTANCES] = {PEQ(0),PEQ(1),PEQ(2),PEQ(3),PEQ(4),PEQ(5),PEQ(6),PEQ(7)};
 
 byte resistanceValue = 0;
 byte savedResistanceValue = 0;
@@ -192,6 +205,32 @@ BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PRO
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
 #endif
 
+#define MAX_SUBOPTIONS 2
+
+typedef struct {
+  unsigned key;
+  const char* heading;
+  const char* subOptions[MAX_SUBOPTIONS+1];
+} MenuEntry_t;
+
+enum {
+  SHOW_PELETON,
+  SEND_CADENCE,
+  SEND_POWER,
+  CLEAR,
+  RESUME
+};
+
+MenuEntry_t menuData[] = {
+  { SHOW_PELETON, "Show Pel equiv", {"No", "Yes"} },
+  { SEND_POWER, "Send power", {"No", "Yes" } },
+  { SEND_CADENCE, "Send cadence", { "No", "Yes" } },
+  { RESUME, "Resume", {NULL} },
+  { CLEAR, "Clear data", {NULL} },
+};
+
+#define NUM_OPTIONS (sizeof menuData / sizeof *menuData)
+
 class MyServerCallbacks:public BLEServerCallbacks
 {
   void onConnect(BLEServer* pServer)
@@ -220,6 +259,7 @@ void InitBLE()
 
 #ifdef CADENCE
   if (cadenceEnabled) {
+    Serial.println("cadence data");
     BLEService *pCadence = pServer->createService(CADENCE_UUID);
   
     pCadence->addCharacteristic(&cscMeasurementCharacteristics);
@@ -236,6 +276,7 @@ void InitBLE()
 
 #ifdef POWER
   if (powerEnabled) {
+    Serial.println("power data");
     BLEService *pPower = pServer->createService(POWER_UUID);
   
     powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
@@ -262,7 +303,6 @@ void InitBLE()
   pAdvertising->setMinPreferred(0x06);  // functions that allegedly help with iPhone connections issue
   pAdvertising->setMaxPreferred(0x12);
   BLEDevice::startAdvertising();
-
 }
 
 void setResistance(uint32_t value) {  
@@ -279,7 +319,7 @@ uint32_t calculatePower(uint32_t revTimeMillis) {
     return 0;
     // https://www.instructables.com/Measure-Exercise-Bike-Powercalorie-Usage/
 #ifdef MECHANICAL_RESISTANCE_BIKE
-  return (mechanicalPartX1000[resistanceValue] + revTimeMillis/2) / revTimeMillis;
+  return (mechanicalPartsX1000[resistanceValue] + revTimeMillis/2) / revTimeMillis;
 #else    
   return (_2_pi_r_100000 * resistanceCoeffRotsX10[resistanceValue] / revTimeMillis + mechanicalPartX1000 + revTimeMillis/2) / revTimeMillis;
 #endif  
@@ -325,15 +365,46 @@ void IRAM_ATTR rotationISR() {
   detectedRotation = true;
 }
 
+void print(const char* text) 
+{
+  while (*text && curX < COLS) {
+    lcd.write(*text++);
+    curX++;
+  }
+}
+
+void clearToEOL() 
+{
+  while(curX < COLS) {
+    lcd.write(' ');
+    curX++;
+  }
+}
+
+void setCursor(unsigned x, unsigned y) 
+{
+  lcd.setCursor(x,y);
+  curX = x;
+  curY = y;
+}
+
+void clear()
+{
+  lcd.clear();
+  needToClear = false;
+  setCursor(0,0);
+}
+
 void setup()
 {
   pinMode(BACKLIGHT, OUTPUT);
   dacWrite(BACKLIGHT,brightnessValue);
-  lcd.begin(20,4);
+  lcd.begin(COLS,ROWS);
   lcd.createChar(1, bluetooth);
-  lcd.print("BLEBike");
-  lcd.setCursor(0,1);
-  lcd.print("Omega Centauri Soft");
+  clear();
+  print("BLEBike");
+  setCursor(0,1);
+  print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
 //  if (!digitalRead(incPin))
@@ -342,7 +413,6 @@ void setup()
     powerEnabled = false;
   Serial.begin(115200);
   Serial.println("BLEBike start");
-  InitBLE();
 #ifdef PULLUP_ON_ROTATION_DETECT  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
 #else
@@ -360,6 +430,12 @@ void setup()
   savedResistanceValue = resistanceValue;
   setBrightness(NVS.getInt("bright", defaultBrightnessValue));
   savedBrightnessValue = brightnessValue;
+  powerEnabled = (bool)NVS.getInt("power", true);
+  cadenceEnabled = (bool)NVS.getInt("cadence", true);
+  showPeleton = (bool)NVS.getInt("peleton", false);
+  needToClear = true;
+  
+  InitBLE();
 }
 
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
@@ -383,23 +459,207 @@ void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
     }
   }
   if (leftAlign) {
-    lcd.print(p);
+    print(p);
     while(n--)
-      lcd.write(' ');
+      print(" ");
     return;
   }
   while(n>0) {
     *--p = ' ';
     n--;
   }
-  lcd.print(p);
+  print(p);
+}
+
+unsigned getSuboption(unsigned option) {
+  switch(menuData[option].key) {
+    case SEND_CADENCE:
+      return cadenceEnabled ? 1 : 0;
+    case SEND_POWER:
+      return powerEnabled ? 1 : 0;
+    case SHOW_PELETON:
+      return showPeleton ? 1 : 0;
+    //case CLEAR:
+    default:
+      return 0;
+  }
+}
+
+void setSuboption(unsigned option, unsigned subOption) {
+  switch(menuData[option].key) {
+    case SEND_CADENCE:
+      if ( cadenceEnabled != ( subOption != 0 ) ) {
+        cadenceEnabled = (subOption != 0);
+        NVS.setInt("cadence", (int)cadenceEnabled);
+        updateBluetooth = true;
+      }
+      break;
+    case SEND_POWER:
+      if ( powerEnabled != ( subOption != 0 ) ) {
+        powerEnabled = (subOption != 0);
+        NVS.setInt("power", (int)powerEnabled);
+        updateBluetooth = true;
+      }
+      break;
+    case SHOW_PELETON:
+      if ( showPeleton != ( subOption != 0 ) ) {
+        showPeleton = (subOption != 0);
+        NVS.setInt("peleton", (int)showPeleton);
+      }
+      break;
+    case CLEAR:
+      if (subOption != 0) {
+        prevRotationMarker = 0;
+        rotationMarkers = 0;
+        lastRotationDuration = 0;
+        lastPower = 0;
+        pedalStartTime = 0;
+        millijoules = 0;
+        pedalledTime = 0;
+      }
+      break;
+  }
+}
+
+bool menuActive = false;
+
+void runMenu(bool dec, bool inc, bool resetMenu) {
+  static unsigned option;
+  static unsigned subOption;
+  static unsigned top;
+  static unsigned originalSubOption;
+  
+  bool redraw = false;
+  
+  if (resetMenu) {
+    option = 0;
+    top = 0;
+    subOption = getSuboption(0);
+    originalSubOption = subOption;
+    redraw = true;
+  }
+  if (inc) {
+    if (menuData[option].subOptions[0] == NULL) {
+      setSuboption(option, 0);
+      menuActive = false;
+      needToClear = true;
+    }
+    else {
+      redraw = true;
+      subOption++;
+      if (menuData[option].subOptions[subOption] == NULL)
+        subOption = 0;
+    }
+  }
+  if (dec) {
+    redraw = true;
+    if (originalSubOption != subOption) {
+      setSuboption(option, subOption);
+      originalSubOption = subOption;
+    }
+    else {
+      option++;
+      if (option >= NUM_OPTIONS)
+        option = 0;
+      subOption = getSuboption(option);
+      originalSubOption = subOption;
+    }
+  }
+
+  if (!redraw)
+    return;
+
+  if (option < top)
+    top = option;
+  else if (option >= top + ROWS)
+    top = option - ROWS + 1;
+    
+  for (unsigned i = 0 ; i < ROWS ; i++) {
+    setCursor(0,i);
+    unsigned o = i + top;
+    if (o < NUM_OPTIONS) {
+      unsigned s;
+      if (o == option) {
+        s = subOption;
+        if (subOption != originalSubOption)
+          print("*");
+        else
+          print(">");
+      }
+      else {
+        s = getSuboption(o);
+        print(" ");
+      }
+      print(menuData[o].heading);
+      if (menuData[o].subOptions[0] != NULL) {
+        print(": ");
+        print(menuData[o].subOptions[s]);      
+      }
+    }
+    clearToEOL();
+  }
+}
+
+// returns true if menu is supposed to be showing
+bool menu(DebounceEvent* decP, DebounceEvent* incP) {
+  static bool exitingMenu = false;
+  static bool ignoreNextDecRelease = false;
+  static uint32_t decPressedTime = (uint32_t)(-1);
+  bool inc;
+  bool dec;
+  bool resetMenu = false;
+
+  if (incButton.getLastState())
+    decPressedTime = (uint32_t)(-1);
+
+  if (*decP == DEBOUNCE_PRESSED && !menuActive) {
+    decPressedTime = millis();
+  }
+  else {
+    if (*decP == DEBOUNCE_RELEASED)
+      decPressedTime = -1;
+      
+    if (decPressedTime != (uint32_t)(-1) && millis() >= decPressedTime + longPressTime ) {
+      ignoreNextDecRelease = true;
+      if (!menuActive) {
+        menuActive = true;
+        resetMenu = true;
+        decPressedTime = (uint32_t)(-1);
+      }
+    }
+  }
+
+  inc = (*incP == DEBOUNCE_RELEASED);
+
+  if (*decP == DEBOUNCE_RELEASED) {
+    if (ignoreNextDecRelease) {
+      ignoreNextDecRelease = false;
+      *decP = DEBOUNCE_NONE;
+    }
+  }
+
+  dec = (*decP == DEBOUNCE_RELEASED);
+
+  if (menuActive) {
+    *decP = DEBOUNCE_NONE;
+    *incP = DEBOUNCE_NONE;
+    
+    runMenu(dec,inc,resetMenu);
+
+    return true;
+  }
+
+  if (updateBluetooth) {
+    ESP.restart(); // TODO: avoid this?
+  }
+
+  return false;
 }
 
 void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t resistance, uint32_t rpm)
 {
   if (needToClear) {
-    lcd.clear();
-    needToClear = false;
+    clear();
   }
   
   char t[32];
@@ -411,35 +671,39 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   pedalledTime /= 60;
   sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
 
-// 01234567890123456789
-// xxxxW xxxrpm xxxxcal
-// #xxxxx Rx B 00:00:00
-  lcd.home();
+  setCursor(0,0);
   printdigits(4,joules/1000);
-  lcd.print("cal ");
+  print("cal ");
   printdigits(4, power);
-  lcd.print("W ");
+  print("W ");
   printdigits(3, rpm);
-  lcd.print("rpm ");
-  lcd.setCursor(0,3);
-  lcd.print("#");
-  printdigits(5,crankRevolution,true);
-  lcd.print(" R");
-  printdigits(1,resistance);
-  lcd.print(bleConnected ? " \x01 " : "   ");
+  print("rpm ");
+
+  if (showPeleton) {
+    setCursor(0,2);
+    print("R");
+    printdigits(3,peletonResistances[resistance],true);
+  }
+  
+  setCursor(0,3);
+  print("L");
+  printdigits(NUM_RESISTANCES<10 ? 1 : 2,resistance+1,true);
+  print(bleConnected ? " \x01 " : "   ");
+  print("#");
+  printdigits(NUM_RESISTANCES<10 ? 6 : 5,crankRevolution,true);
   if (pedalledTime < 10)
-    lcd.write(' ');
-  lcd.print(t);
+    print(" ");
+  print(t);
   orgTime /= 1000;
   if (orgTime == 0 || crankRevolution < 2) {
     return;
   }
-  lcd.setCursor(0,1);
-  lcd.print("   avg: ");
+  setCursor(0,1);
+  print("   avg: ");
   printdigits(4, (joules+orgTime/2) / orgTime);
-  lcd.print("W ");
+  print("W ");
   printdigits(3, crankRevolution * 60 / orgTime); 
-  lcd.print("rpm");
+  print("rpm");
 }
 
 void checkSave() {
@@ -475,12 +739,16 @@ void changeBrightness(int32_t delta) {
 
 void loop ()
 {
-  switch(incButton.getEvent()) {
+  DebounceEvent incEvent = incButton.getEvent();
+  DebounceEvent decEvent = decButton.getEvent();
+  
+  bool showedMenu = menu(&decEvent, &incEvent);
+  
+  switch(incEvent) {
     case DEBOUNCE_RELEASED:
-      incState = false;
       if (ignoreIncRelease)
         break;
-      if (!decState) {
+      if (!decButton.getLastState()) {
         changeResistance(1);
       }
       else {
@@ -489,17 +757,15 @@ void loop ()
       }
       break;
     case DEBOUNCE_PRESSED:
-      incState = true;
       ignoreIncRelease = false;
       break;
   }
 
-  switch(decButton.getEvent()) {
+  switch(decEvent) {
     case DEBOUNCE_RELEASED:
-      decState = false;
       if (ignoreDecRelease)
         break;
-      if (!incState) {
+      if (!incButton.getLastState()) {
         changeResistance(-1);
       }
       else {
@@ -508,7 +774,6 @@ void loop ()
       }
       break;
     case DEBOUNCE_PRESSED:
-      decState = true;
       ignoreDecRelease = false;
       break;
   }
@@ -545,11 +810,12 @@ void loop ()
   else 
     rpm = 60000 / _lastRotationDuration;
 
-  show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue+1, rpm);
+  if (!showedMenu) 
+    show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue, rpm);
 
   lastUpdateTime = t;
 
-  if (!bleConnected)
+  if (!bleConnected || updateBluetooth)
     return;
 
   uint32_t lastCrankRevolution = getTime1024ths(_prevRotationMarker);

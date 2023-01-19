@@ -87,6 +87,11 @@ class Debounce {
         else
             return DEBOUNCE_NONE;        
     }
+
+    // this is only defined to work after wasToggled(), getState() and wasPressed()
+    bool getLastState(void) {
+      return curState;
+    }
     
     // for state monitoring
     bool getState(void) {
