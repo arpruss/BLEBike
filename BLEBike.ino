@@ -6,7 +6,7 @@
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h> 
-#include <ArduinoNvs.h>
+#include <ArduinoNvs.h> // https://github.com/rpolitex/ArduinoNvs
 #include "debounce.h"
 
 #define POWER
@@ -109,6 +109,8 @@ const uint32_t gearRatio1 = 1; // gearRatio1:gearRatio2 = wheel rotations:crank 
 const uint32_t gearRatio2 = 2; 
 #endif
 
+#define GROSS_EFFICIENCYx1000 195 // 195 recumbent, 206 upright, at max power output: https://doi.org/10.3389/fspor.2021.667564
+#define MJ_TO_KCALx1000 239
 #define NUM_RESISTANCES 8
 #define RADIUSX1000 149 // radius of crank in meters * 1000 (= radius of crank in mm)
 
@@ -672,7 +674,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   sprintf(t, "%u:%02u:%02u",(unsigned)pedalledTime,min,sec); 
 
   setCursor(0,0);
-  printdigits(4,joules/1000);
+  printdigits(4,( joules * MJ_TO_KCALx1000 + 1000 * GROSS_EFFICIENCYx1000 / 2 ) / (1000 * GROSS_EFFICIENCYx1000) );
   print("cal ");
   printdigits(4, power);
   print("W ");
@@ -850,4 +852,3 @@ void loop ()
   }
 #endif  
 }
-
