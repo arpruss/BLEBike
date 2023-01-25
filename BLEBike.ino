@@ -11,12 +11,14 @@
 
 #define POWER
 #define CADENCE
+//#define HEART
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
 //#define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
+const uint32_t heartSensorPin = 19;
 
 #ifdef LIBRARY_HD44780
 # include <hd44780.h>
@@ -81,12 +83,16 @@ unsigned curX = 0;
 unsigned curY = 0;
 const uint8_t defaultRotationMarkerValue = 1; // this is what is there most of the time
 uint8_t cleanRotationMarkerState = defaultRotationMarkerValue; // most likely
+const uint8_t defaultHeartSensorValue = 1;
+uint8_t cleanHeartSensorState = defaultHeartSensorValue;
 const uint32_t rotationMarkerDebounceTime = 20;
+const uint32_t heartSensorDebounceTime = 2;
 const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000; 
 const uint32_t longPressTime = 2000;
 bool cadenceEnabled = true;
 bool powerEnabled = true;
+bool heartEnabled = true;
 bool showPeleton = true;
 bool updateBluetooth = false;
 
@@ -97,9 +103,11 @@ uint32_t lastPower = 0;
 uint32_t pedalStartTime = 0;
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
+uint32_t heartBeats = 0;
+uint32_t lastHeartBeatDuration = 0;
+uint32_t prevHeartBeat = 0;
 
 bool detectedRotation = false;
-uint32_t lastBounce = 0;
 
 
 uint32_t lastUpdateTime = 0;
@@ -188,6 +196,20 @@ uint32_t powerFeature = 8 // crank revolution
 ;
 byte powerlocation = 6; // right crank
 
+struct HeartMeasurement8_t {
+  uint8_t flags;
+  uint8_t heartRate;
+} __packed;
+
+HeartMeasurement8_t heartMeasurement8 = { .flags = 0 };
+
+struct HeartMeasurement16_t {
+  uint8_t flags;
+  uint16_t heartRate;
+} __packed;
+
+HeartMeasurement8_t heartMeasurement16 = { .flags = 1 };
+
 bool bleConnected = false;
 
 #define ID(x) (BLEUUID((uint16_t)(x)))
@@ -207,6 +229,12 @@ BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PRO
 BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
 #endif
 
+#ifdef HEART
+#define HEART_UUID ID(0x180D)
+BLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), BLECharacteristic::PROPERTY_NOTIFY);
+BLE2902 heartMeasurementDescriptor; //Client Characteristic Descriptor
+#endif
+
 #define MAX_SUBOPTIONS 2
 
 typedef struct {
@@ -219,14 +247,22 @@ enum {
   SHOW_PELETON,
   SEND_CADENCE,
   SEND_POWER,
+  SEND_HEART,
   CLEAR,
   RESUME
 };
 
 MenuEntry_t menuData[] = {
   { SHOW_PELETON, "Show Pel equiv", {"No", "Yes"} },
+#ifdef POWER  
   { SEND_POWER, "Send power", {"No", "Yes" } },
+#endif
+#ifdef CADENCE  
   { SEND_CADENCE, "Send cadence", { "No", "Yes" } },
+#endif
+#ifdef HEART
+  { SEND_HEART, "Send heart", { "No", "Yes" } },
+#endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear data", {NULL} },
 };
@@ -296,6 +332,20 @@ void InitBLE()
   }
 #endif
 
+#ifdef HEART
+  if (heartEnabled) {
+    Serial.println("heart data");
+    BLEService *pHeart = pServer->createService(HEART_UUID);
+  
+    heartMeasurementCharacteristics.addDescriptor(&heartMeasurementDescriptor);
+    pHeart->addCharacteristic(&heartMeasurementCharacteristics);
+    
+    pAdvertising->addServiceUUID(HEART_UUID);
+  
+    pHeart->start();
+  }
+#endif
+
   BLEAdvertisementData data;
   data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
   data.setName(DEVICE_NAME);
@@ -335,6 +385,8 @@ inline uint16_t getTime1024ths(uint32_t ms)
 }
 
 void IRAM_ATTR rotationISR() {
+  static uint32_t lastBounce = 0;
+
   if (digitalRead(rotationDetectPin) == cleanRotationMarkerState)
     return;
 
@@ -365,6 +417,35 @@ void IRAM_ATTR rotationISR() {
   rotationMarkers++;
   prevRotationMarker = t;
   detectedRotation = true;
+}
+
+void IRAM_ATTR heartISR() {
+  static uint32_t lastBounce = 0;
+
+  if (digitalRead(heartSensorPin) == cleanHeartSensorState)
+    return;
+
+  uint32_t t = millis();
+
+  if (t < lastBounce + heartSensorDebounceTime) {
+    lastBounce = t;
+    return;
+  }
+
+  lastBounce = t;
+
+  cleanHeartSensorState = ! cleanHeartSensorState;
+
+  if (cleanHeartSensorState != defaultHeartSensorValue)
+    return; 
+  // trigger on end of sensor value
+  // TODO: figure out if the debounce algorithm is solid
+      
+  if (heartBeats > 0) {
+    lastHeartBeatDuration = t - prevHeartBeat;
+  }
+  heartBeats++;
+  prevHeartBeat = t;
 }
 
 void print(const char* text) 
@@ -409,10 +490,6 @@ void setup()
   print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
-//  if (!digitalRead(incPin))
-//    cadenceEnabled = false;
-  if (!digitalRead(decPin))
-    powerEnabled = false;
   Serial.begin(115200);
   Serial.println("BLEBike start");
 #ifdef PULLUP_ON_ROTATION_DETECT  
@@ -420,9 +497,13 @@ void setup()
 #else
   pinMode(rotationDetectPin, INPUT); 
 #endif  
+#ifdef HEART
+  pinMode(heartSensorPin, INPUT);
+#endif
   // it would be better to trigger on FALLING or on RISING, but the debounce would be tricky,
   // and neither FALLING or RISING trigger seems reliable: https://github.com/espressif/arduino-esp32/issues/1111
   attachInterrupt(rotationDetectPin, rotationISR, CHANGE);
+  attachInterrupt(heartSensorPin, heartISR, CHANGE);
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 0);
   cleanRotationMarkerState = digitalRead(rotationDetectPin);
@@ -479,6 +560,8 @@ unsigned getSuboption(unsigned option) {
       return cadenceEnabled ? 1 : 0;
     case SEND_POWER:
       return powerEnabled ? 1 : 0;
+    case SEND_HEART:
+      return heartEnabled ? 1 : 0;
     case SHOW_PELETON:
       return showPeleton ? 1 : 0;
     //case CLEAR:
@@ -500,6 +583,13 @@ void setSuboption(unsigned option, unsigned subOption) {
       if ( powerEnabled != ( subOption != 0 ) ) {
         powerEnabled = (subOption != 0);
         NVS.setInt("power", (int)powerEnabled);
+        updateBluetooth = true;
+      }
+      break;
+    case SEND_HEART:
+      if ( heartEnabled != ( subOption != 0 ) ) {
+        heartEnabled = (subOption != 0);
+        NVS.setInt("heart", (int)heartEnabled);
         updateBluetooth = true;
       }
       break;
@@ -851,4 +941,24 @@ void loop ()
     cscMeasurementCharacteristics.notify();
   }
 #endif  
+
+  static uint32_t lastHeartRateUpdate = 0;
+
+#ifdef HEART
+  if (heartEnabled && millis() >= lastHeartRateUpdate + 1000 && lastHeartBeatDuration > 0 && millis() <= prevHeartBeat + 4000) {
+    uint16_t heartRate = (1000 + lastHeartBeatDuration/2) / lastHeartBeatDuration;
+    
+    if (heartRate <= 255) {
+      heartMeasurement8.heartRate = heartRate;
+      heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement8, sizeof(HeartMeasurement8_t));
+    }
+    else {
+      heartMeasurement8.heartRate = heartRate;
+      heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement16, sizeof(HeartMeasurement16_t));
+    }
+    heartMeasurementCharacteristics.notify();
+    lastHeartRateUpdate = millis();
+  }
+#endif  
+
 }
