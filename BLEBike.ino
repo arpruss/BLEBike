@@ -600,15 +600,13 @@ void setSuboption(unsigned option, unsigned subOption) {
       }
       break;
     case CLEAR:
-      if (subOption != 0) {
-        prevRotationMarker = 0;
-        rotationMarkers = 0;
-        lastRotationDuration = 0;
-        lastPower = 0;
-        pedalStartTime = 0;
-        millijoules = 0;
-        pedalledTime = 0;
-      }
+      prevRotationMarker = 0;
+      rotationMarkers = 0;
+      lastRotationDuration = 0;
+      lastPower = 0;
+      pedalStartTime = 0;
+      millijoules = 0;
+      pedalledTime = 0;
       break;
   }
 }
