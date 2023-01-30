@@ -2,23 +2,27 @@
  * MIT License
 */
 
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLE2902.h> 
+#include <NimBLEDevice.h>
+#include <NimBLEUtils.h>
+#include <NimBLEServer.h>
+//#include <NimBLE2902.h> 
 #include <ArduinoNvs.h> // https://github.com/rpolitex/ArduinoNvs
 #include "debounce.h"
 
 #define POWER
 #define CADENCE
-//#define HEART
+#define HEART_MIBAND3 "db:33:64:af:f5:e9"
+//#define HEART_PIN 19 // untested
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
 //#define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
+#if defined(HEART_MIBAND3) || defined(HEART_PIN)
+# define HEART
+#endif
+
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
-const uint32_t heartSensorPin = 19;
 
 #ifdef LIBRARY_HD44780
 # include <hd44780.h>
@@ -60,7 +64,7 @@ LiquidCrystal
 #endif
 lcd(rs, en, d4, d5, d6, d7);
 
-byte bluetooth[8] = {
+byte bluetoothIcon[8] = {
   B00110, //..XX.
   B10101, //X.X.X
   B01110, //.XXX.
@@ -70,6 +74,18 @@ byte bluetooth[8] = {
   B00110, //..XX.
   B00000, //.....
 };
+
+byte heartIcon[8] = {
+   B00000,
+   B01010,
+   B10101,
+   B10001,
+   B10001,
+   B01010,
+   B00100,
+   B00000
+};
+   
 
 const uint32_t ledPin = 2;
 const uint32_t incPin = 0;
@@ -103,12 +119,21 @@ uint32_t lastPower = 0;
 uint32_t pedalStartTime = 0;
 uint64_t millijoules = 0;
 uint32_t pedalledTime = 0;
+#ifdef HEART_PIN
 uint32_t heartBeats = 0;
 uint32_t lastHeartBeatDuration = 0;
 uint32_t prevHeartBeat = 0;
-
+#endif
+#ifdef HEART_MIBAND3
+bool needToReportHeartRate = false;
+NimBLEAddress bandAddress(HEART_MIBAND3,1);
+NimBLEScan* heartScan;
+#endif
+#ifdef HEART
+uint32_t lastHeartRate = 0;
+uint32_t lastHeartRateTime = 0;
+#endif
 bool detectedRotation = false;
-
 
 uint32_t lastUpdateTime = 0;
 
@@ -212,27 +237,24 @@ HeartMeasurement8_t heartMeasurement16 = { .flags = 1 };
 
 bool bleConnected = false;
 
-#define ID(x) (BLEUUID((uint16_t)(x)))
+#define ID(x) (NimBLEUUID((uint16_t)(x)))
 
 #ifdef CADENCE
 #define CADENCE_UUID ID(0x1816)
-BLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), BLECharacteristic::PROPERTY_NOTIFY);
-BLE2902 cscMeasurementDescriptor; //Client Characteristic Descriptor
-BLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), BLECharacteristic::PROPERTY_READ);
+NimBLECharacteristic cscMeasurementCharacteristics(ID(0x2A5B), NIMBLE_PROPERTY::NOTIFY);
+NimBLECharacteristic cscFeatureCharacteristics(ID(0x2A5C), NIMBLE_PROPERTY::READ);
 #endif
 
 #ifdef POWER
 #define POWER_UUID ID(0x1818)
-BLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), BLECharacteristic::PROPERTY_NOTIFY);
-BLE2902 powerMeasurementDescriptor; //Client Characteristic Descriptor
-BLECharacteristic powerFeatureCharacteristics(ID(0x2A65), BLECharacteristic::PROPERTY_READ);
-BLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), BLECharacteristic::PROPERTY_READ);
+NimBLECharacteristic powerMeasurementCharacteristics(ID(0x2A63), NIMBLE_PROPERTY::NOTIFY);
+NimBLECharacteristic powerFeatureCharacteristics(ID(0x2A65), NIMBLE_PROPERTY::READ);
+NimBLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), NIMBLE_PROPERTY::READ);
 #endif
 
 #ifdef HEART
 #define HEART_UUID ID(0x180D)
-BLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), BLECharacteristic::PROPERTY_NOTIFY);
-BLE2902 heartMeasurementDescriptor; //Client Characteristic Descriptor
+NimBLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), NIMBLE_PROPERTY::NOTIFY);
 #endif
 
 #define MAX_SUBOPTIONS 2
@@ -261,7 +283,7 @@ MenuEntry_t menuData[] = {
   { SEND_CADENCE, "Send cadence", { "No", "Yes" } },
 #endif
 #ifdef HEART
-  { SEND_HEART, "Send heart", { "No", "Yes" } },
+  { SEND_HEART, "Heart rate", { "No", "Yes" } },
 #endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear data", {NULL} },
@@ -269,39 +291,69 @@ MenuEntry_t menuData[] = {
 
 #define NUM_OPTIONS (sizeof menuData / sizeof *menuData)
 
-class MyServerCallbacks:public BLEServerCallbacks
+class MyServerCallbacks:public NimBLEServerCallbacks
 {
-  void onConnect(BLEServer* pServer)
+  void onConnect(NimBLEServer* pServer)
   {
     Serial.println("connected");
     bleConnected = true;
   };
 
-  void onDisconnect(BLEServer* pServer)
+  void onDisconnect(NimBLEServer* pServer)
   {
     Serial.println("disconnected");
-    BLEDevice::startAdvertising();
+    NimBLEDevice::startAdvertising();
     bleConnected = false;
   }
 };
 
-void InitBLE()
+#ifdef HEART_MIBAND3
+void heartRate(unsigned rate) {
+   lastHeartRate = rate;
+   needToReportHeartRate = true;
+   lastHeartRateTime = millis();
+}
+
+class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
+      if (advertisedDevice->getAddress() != bandAddress)
+        return;
+      unsigned char* p = (unsigned char*)advertisedDevice->getServiceData().data();
+      unsigned l = advertisedDevice->getServiceData().length();
+      if (l < 5)
+        return;
+      if (l == 5) {
+        heartRate(p[4]);
+      }
+      else {
+        heartRate(p[4]+256*p[5]);
+      }
+    }
+};
+
+void heartScanDone(NimBLEScanResults res) {
+  Serial.println("reset scan");
+  heartScan->start(0, heartScanDone, true);
+}
+#endif
+
+
+void InitNimBLE()
 {
   if (!powerEnabled && !cadenceEnabled)
     return;
   
-  BLEDevice::init("Omega Centauri " DEVICE_NAME);
-  BLEServer *pServer = BLEDevice::createServer();
+  NimBLEDevice::init("Omega Centauri " DEVICE_NAME);
+  NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
 
 #ifdef CADENCE
   if (cadenceEnabled) {
     Serial.println("cadence data");
-    BLEService *pCadence = pServer->createService(CADENCE_UUID);
+    NimBLEService *pCadence = pServer->createService(CADENCE_UUID);
   
     pCadence->addCharacteristic(&cscMeasurementCharacteristics);
-    cscMeasurementCharacteristics.addDescriptor(&cscMeasurementDescriptor);
   
     pCadence->addCharacteristic(&cscFeatureCharacteristics);
     cscFeatureCharacteristics.setValue(&cscFeature, 1);
@@ -315,9 +367,8 @@ void InitBLE()
 #ifdef POWER
   if (powerEnabled) {
     Serial.println("power data");
-    BLEService *pPower = pServer->createService(POWER_UUID);
+    NimBLEService *pPower = pServer->createService(POWER_UUID);
   
-    powerMeasurementCharacteristics.addDescriptor(&powerMeasurementDescriptor);
     pPower->addCharacteristic(&powerMeasurementCharacteristics);
     
     pPower->addCharacteristic(&powerFeatureCharacteristics);
@@ -335,9 +386,8 @@ void InitBLE()
 #ifdef HEART
   if (heartEnabled) {
     Serial.println("heart data");
-    BLEService *pHeart = pServer->createService(HEART_UUID);
+    NimBLEService *pHeart = pServer->createService(HEART_UUID);
   
-    heartMeasurementCharacteristics.addDescriptor(&heartMeasurementDescriptor);
     pHeart->addCharacteristic(&heartMeasurementCharacteristics);
     
     pAdvertising->addServiceUUID(HEART_UUID);
@@ -346,7 +396,7 @@ void InitBLE()
   }
 #endif
 
-  BLEAdvertisementData data;
+  NimBLEAdvertisementData data;
   data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
   data.setName(DEVICE_NAME);
 
@@ -354,7 +404,20 @@ void InitBLE()
   pAdvertising->setScanResponse(true);
   pAdvertising->setMinPreferred(0x06);  // functions that allegedly help with iPhone connections issue
   pAdvertising->setMaxPreferred(0x12);
-  BLEDevice::startAdvertising();
+  NimBLEDevice::startAdvertising();
+
+#ifdef HEART_MIBAND3
+  if (heartEnabled) {
+    heartScan = NimBLEDevice::getScan();
+    heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
+    heartScan->setActiveScan(true);
+    heartScan->setMaxResults(0);
+    NimBLEDevice::whiteListAdd(bandAddress);
+        
+    heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
+    heartScan->start(30, heartScanDone, false);  
+  }
+#endif  
 }
 
 void setResistance(uint32_t value) {  
@@ -419,6 +482,7 @@ void IRAM_ATTR rotationISR() {
   detectedRotation = true;
 }
 
+#ifdef HEART_PIN
 void IRAM_ATTR heartISR() {
   static uint32_t lastBounce = 0;
 
@@ -447,6 +511,7 @@ void IRAM_ATTR heartISR() {
   heartBeats++;
   prevHeartBeat = t;
 }
+#endif
 
 void print(const char* text) 
 {
@@ -483,27 +548,28 @@ void setup()
   pinMode(BACKLIGHT, OUTPUT);
   dacWrite(BACKLIGHT,brightnessValue);
   lcd.begin(COLS,ROWS);
-  lcd.createChar(1, bluetooth);
+  lcd.createChar(1, bluetoothIcon);
+  lcd.createChar(2, heartIcon);
   clear();
-  print("BLEBike");
+  print("NimBLEBike");
   setCursor(0,1);
   print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
   Serial.begin(115200);
-  Serial.println("BLEBike start");
+  Serial.println("NimBLEBike start");
 #ifdef PULLUP_ON_ROTATION_DETECT  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
 #else
   pinMode(rotationDetectPin, INPUT); 
 #endif  
-#ifdef HEART
-  pinMode(heartSensorPin, INPUT);
+#ifdef HEART_PIN
+  pinMode(HEART_PIN, INPUT);
+  attachInterrupt(HEART_PIN, heartISR, CHANGE);
 #endif
   // it would be better to trigger on FALLING or on RISING, but the debounce would be tricky,
   // and neither FALLING or RISING trigger seems reliable: https://github.com/espressif/arduino-esp32/issues/1111
   attachInterrupt(rotationDetectPin, rotationISR, CHANGE);
-  attachInterrupt(heartSensorPin, heartISR, CHANGE);
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, 0);
   cleanRotationMarkerState = digitalRead(rotationDetectPin);
@@ -515,10 +581,11 @@ void setup()
   savedBrightnessValue = brightnessValue;
   powerEnabled = (bool)NVS.getInt("power", true);
   cadenceEnabled = (bool)NVS.getInt("cadence", true);
+  heartEnabled = (bool)NVS.getInt("heart", true);
   showPeleton = (bool)NVS.getInt("peleton", false);
   needToClear = true;
   
-  InitBLE();
+  InitNimBLE();
 }
 
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
@@ -774,6 +841,17 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
     print("R");
     printdigits(3,peletonResistances[resistance],true);
   }
+
+#ifdef HEART
+  if (heartEnabled && millis() < lastHeartRateTime + 6000) {
+    setCursor(13,2);
+    if (lastHeartRate) {
+      print("\2");
+      printdigits(3,lastHeartRate,true);
+    }
+    clearToEOL();
+  }
+#endif
   
   setCursor(0,3);
   print("L");
@@ -872,7 +950,11 @@ void loop ()
 
   uint32_t t = millis();
 
-  if (! detectedRotation && lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
+  if (! detectedRotation && 
+#ifdef HEART_MIBAND3
+  ! needToReportHeartRate &&
+#endif  
+  lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
     return;
 
   noInterrupts();
@@ -940,11 +1022,18 @@ void loop ()
   }
 #endif  
 
+#ifdef HEART
+  if (!heartEnabled)
+    return;
+#endif
+
+#ifdef HEART_PIN
   static uint32_t lastHeartRateUpdate = 0;
 
-#ifdef HEART
-  if (heartEnabled && millis() >= lastHeartRateUpdate + 1000 && lastHeartBeatDuration > 0 && millis() <= prevHeartBeat + 4000) {
+  if (millis() >= lastHeartRateUpdate + 1000 && lastHeartBeatDuration > 0 && millis() <= prevHeartBeat + 4000) {
     uint16_t heartRate = (1000 + lastHeartBeatDuration/2) / lastHeartBeatDuration;
+    lastHeartRate = heartRate;
+    lastHeartRateTime = prevHeartBeat;
     
     if (heartRate <= 255) {
       heartMeasurement8.heartRate = heartRate;
@@ -958,5 +1047,23 @@ void loop ()
     lastHeartRateUpdate = millis();
   }
 #endif  
+
+#ifdef HEART_MIBAND3
+  if (needToReportHeartRate) {
+    needToReportHeartRate = false;
+    if (lastHeartRate > 0) {
+      if (lastHeartRate <= 255) {
+        heartMeasurement8.heartRate = lastHeartRate;
+        heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement8, sizeof(HeartMeasurement8_t));
+      }
+      else {
+        heartMeasurement8.heartRate = lastHeartRate;
+        heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement16, sizeof(HeartMeasurement16_t));
+      }
+      heartMeasurementCharacteristics.notify();
+    }    
+  }
+
+#endif
 
 }
