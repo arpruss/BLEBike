@@ -5,13 +5,13 @@
 #include <NimBLEDevice.h>
 #include <NimBLEUtils.h>
 #include <NimBLEServer.h>
-//#include <NimBLE2902.h> 
 #include <ArduinoNvs.h> // https://github.com/rpolitex/ArduinoNvs
 #include "debounce.h"
 
 #define POWER
 #define CADENCE
 #define HEART_MIBAND3 "db:33:64:af:f5:e9"
+#define HEART_ADV_UUID16 0xFEE0
 //#define HEART_PIN 19 // untested
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
@@ -126,7 +126,10 @@ uint32_t prevHeartBeat = 0;
 #endif
 #ifdef HEART_MIBAND3
 bool needToReportHeartRate = false;
-NimBLEAddress bandAddress(HEART_MIBAND3,1);
+uint64_t bandAddress=0;
+uint8_t bandAddressType=1;
+int bestBandRSSI=-1000000;
+uint64_t bestBandAddress=0;
 NimBLEScan* heartScan;
 #endif
 #ifdef HEART
@@ -255,6 +258,9 @@ NimBLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), NIMBLE_PROPE
 #ifdef HEART
 #define HEART_UUID ID(0x180D)
 NimBLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), NIMBLE_PROPERTY::NOTIFY);
+#ifdef HEART_ADV_UUID16
+NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
+#endif
 #endif
 
 #define MAX_SUBOPTIONS 2
@@ -271,7 +277,8 @@ enum {
   SEND_POWER,
   SEND_HEART,
   CLEAR,
-  RESUME
+  RESUME,
+  RESCAN_MIBAND,
 };
 
 MenuEntry_t menuData[] = {
@@ -286,7 +293,10 @@ MenuEntry_t menuData[] = {
   { SEND_HEART, "Heart rate", { "No", "Yes" } },
 #endif  
   { RESUME, "Resume", {NULL} },
-  { CLEAR, "Clear data", {NULL} },
+  { CLEAR, "Clear current data", {NULL} },
+#ifdef HEART_MIBAND3
+  { RESCAN_MIBAND, "Rescan for MiBand", {NULL} },
+#endif  
 };
 
 #define NUM_OPTIONS (sizeof menuData / sizeof *menuData)
@@ -316,12 +326,31 @@ void heartRate(unsigned rate) {
 
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
-      if (advertisedDevice->getAddress() != bandAddress)
+      if (advertisedDevice->getAddress().getType() != bandAddressType) 
         return;
-      unsigned char* p = (unsigned char*)advertisedDevice->getServiceData().data();
-      unsigned l = advertisedDevice->getServiceData().length();
+      uint64_t address = (uint64_t)(advertisedDevice->getAddress());
+      if (bandAddress != 0) {
+        if (address != bandAddress) {
+          return;
+        }
+      }
+      else {
+        if (! advertisedDevice->haveRSSI())
+          return;
+        int rssi = advertisedDevice->getRSSI();
+        if (address != bestBandAddress && rssi < bestBandRSSI)
+          return;
+        if (rssi > bestBandRSSI) {
+          bestBandRSSI = rssi;
+          bestBandAddress = address;
+          Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
+        }
+      }
+      std::string serviceData = advertisedDevice->getServiceData(HEART_ADV_UUID);
+      unsigned l = serviceData.length();
       if (l < 5)
         return;
+      unsigned char* p = (unsigned char*)(serviceData.data());
       if (l == 5) {
         heartRate(p[4]);
       }
@@ -331,16 +360,43 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     }
 };
 
+void startHeartScan();
+
 void heartScanDone(NimBLEScanResults res) {
   Serial.println("reset scan");
-  heartScan->start(0, heartScanDone, true);
+  if (bandAddress == 0 && bestBandAddress != 0) {
+    bandAddress = bestBandAddress;
+    NVS.setInt("bandAddress", bandAddress);
+    Serial.printf("Saving address: %llx (RSSI %d)\n", bandAddress, bestBandRSSI);
+  }
+  startHeartScan();
+}
+
+void startHeartScan() {
+    if (bandAddress != 0) {
+      size_t count = NimBLEDevice::getWhiteListCount();
+      if (count == 0 || (uint64_t)NimBLEDevice::getWhiteListAddress(0) != bandAddress) {
+        Serial.println("resetting whitelist");
+        for (int i = count - 1 ; i >= 0 ; i--)
+          NimBLEDevice::whiteListRemove(NimBLEDevice::getWhiteListAddress(i));
+        BLEAddress toAdd(bandAddress,bandAddressType);
+        NimBLEDevice::whiteListAdd(toAdd);
+      }
+      heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
+    }
+    else {
+      bestBandAddress = 0;
+      bestBandRSSI = -1000000;
+      heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_NO_WL);
+    }
+    heartScan->start(30, heartScanDone, false);  
 }
 #endif
 
 
 void InitNimBLE()
 {
-  if (!powerEnabled && !cadenceEnabled)
+  if (!powerEnabled && !cadenceEnabled && !heartEnabled)
     return;
   
   NimBLEDevice::init("Omega Centauri " DEVICE_NAME);
@@ -408,14 +464,13 @@ void InitNimBLE()
 
 #ifdef HEART_MIBAND3
   if (heartEnabled) {
+    bandAddress = NVS.getInt("bandAddress", 0);
+    Serial.printf("Band address: %llx\n", bandAddress);
     heartScan = NimBLEDevice::getScan();
     heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
     heartScan->setActiveScan(true);
     heartScan->setMaxResults(0);
-    NimBLEDevice::whiteListAdd(bandAddress);
-        
-    heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
-    heartScan->start(30, heartScanDone, false);  
+    startHeartScan();
   }
 #endif  
 }
@@ -675,6 +730,15 @@ void setSuboption(unsigned option, unsigned subOption) {
       millijoules = 0;
       pedalledTime = 0;
       break;
+#ifdef HEART_MIBAND3      
+    case RESCAN_MIBAND:
+      NVS.setInt("bandAddress", 0);
+      bandAddress = 0;
+      bestBandAddress = 0;
+      lastHeartRate = 0;
+      heartScan->stop();
+      break;
+#endif
   }
 }
 
