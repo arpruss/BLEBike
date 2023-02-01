@@ -131,6 +131,7 @@ uint8_t bandAddressType=1;
 int bestBandRSSI=-1000000;
 uint64_t bestBandAddress=0;
 NimBLEScan* heartScan;
+#define HEART_SENSOR_ON_WRIST
 #endif
 #ifdef HEART
 uint32_t lastHeartRate = 0;
@@ -230,6 +231,9 @@ struct HeartMeasurement8_t {
 } __packed;
 
 HeartMeasurement8_t heartMeasurement8 = { .flags = 0 };
+#ifdef HEART_SENSOR_ON_WRIST
+byte heartLocation = 2;
+#endif
 
 struct HeartMeasurement16_t {
   uint8_t flags;
@@ -258,6 +262,9 @@ NimBLECharacteristic powerSensorLocationCharacteristics(ID(0x2A5D), NIMBLE_PROPE
 #ifdef HEART
 #define HEART_UUID ID(0x180D)
 NimBLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), NIMBLE_PROPERTY::NOTIFY);
+#ifdef HEART_SENSOR_ON_WRIST
+NimBLECharacteristic heartSensorLocationCharacteristics(ID(0x2A38), NIMBLE_PROPERTY::READ);
+#endif
 #ifdef HEART_ADV_UUID16
 NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
 #endif
@@ -445,7 +452,12 @@ void InitNimBLE()
     NimBLEService *pHeart = pServer->createService(HEART_UUID);
   
     pHeart->addCharacteristic(&heartMeasurementCharacteristics);
-    
+
+#ifdef HEART_SENSOR_ON_WRIST    
+    pHeart->addCharacteristic(&heartSensorLocationCharacteristics);
+    heartSensorLocationCharacteristics.setValue(&heartLocation, 1);  
+#endif    
+  
     pAdvertising->addServiceUUID(HEART_UUID);
   
     pHeart->start();
