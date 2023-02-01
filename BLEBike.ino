@@ -10,12 +10,12 @@
 
 #define POWER
 #define CADENCE
-#define HEART_MIBAND3 "db:33:64:af:f5:e9"
-#define HEART_ADV_UUID16 0xFEE0
+#define HEART_MIBAND3 
+#define HEART_ADV_UUID16 0xFEE0 
 //#define HEART_PIN 19 // untested
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
-//#define PULLUP_ON_ROTATION_DETECT // handy for debugging
+#define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
 #if defined(HEART_MIBAND3) || defined(HEART_PIN)
 # define HEART
@@ -907,13 +907,15 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   }
 
 #ifdef HEART
-  if (heartEnabled && millis() < lastHeartRateTime + 6000) {
-    setCursor(13,2);
-    if (lastHeartRate) {
+  if (heartEnabled) {
+    setCursor(COLS-3-1,2);
+    if (lastHeartRate && millis() < lastHeartRateTime + 6000) {
       print("\2");
-      printdigits(3,lastHeartRate,true);
+      printdigits(3,lastHeartRate);
     }
-    clearToEOL();
+    else {
+      clearToEOL();
+    }
   }
 #endif
   
