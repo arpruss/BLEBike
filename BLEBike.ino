@@ -270,7 +270,7 @@ NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
 #endif
 #endif
 
-#define MAX_SUBOPTIONS 6
+#define MAX_SUBOPTIONS 2
 
 typedef struct {
   unsigned key;
@@ -283,7 +283,6 @@ enum {
   SEND_CADENCE,
   SEND_POWER,
   SEND_HEART,
-  HEART_DISTANCE,
   CLEAR,
   RESUME,
   RESCAN_MIBAND,
@@ -299,9 +298,6 @@ MenuEntry_t menuData[] = {
 #endif
 #ifdef HEART
   { SEND_HEART, "Heart rate", { "No", "Yes" } },
-#ifdef HEART_MIBAND3
-  { HEART_DISTANCE, "Heart dist.", { "1.5m", "2.5m", "4m", "6m", "10m", "inf." } },
-#endif  
 #endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear current data", {NULL} },
@@ -311,15 +307,6 @@ MenuEntry_t menuData[] = {
 };
 
 #define NUM_OPTIONS (sizeof menuData / sizeof *menuData)
-
-#ifdef HEART_MIBAND3
-// power-RSSI = 2*10 * log10(distance) : bigger is further
-// matching distances in menu
-int heartPowerMinusRSSITable[6] = { 4,8,12,16,20,INT_MAX };
-const unsigned heartDistanceOptionDefault = 1;
-unsigned heartDistanceOption;
-int heartPowerMinusRSSIMax;
-#endif
 
 class MyServerCallbacks:public NimBLEServerCallbacks
 {
@@ -366,18 +353,6 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
           Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
         }
       }
-
-      if (heartPowerMinusRSSIMax != INT_MAX) {
-        if (! advertisedDevice->haveRSSI())
-          return;
-  
-        int powerMinusRSSI = advertisedDevice->haveTXPower()?(int)advertisedDevice->getTXPower():-80 - advertisedDevice->getRSSI();
-        //Serial.printf("p-RSSI=%d, max=%d\n", powerMinusRSSI, heartPowerMinusRSSIMax);
-  
-        if (powerMinusRSSI > heartPowerMinusRSSIMax)
-          return;
-      }
-            
       std::string serviceData = advertisedDevice->getServiceData(HEART_ADV_UUID);
       unsigned l = serviceData.length();
       if (l < 5)
@@ -500,16 +475,6 @@ void InitNimBLE()
   NimBLEDevice::startAdvertising();
 
 #ifdef HEART_MIBAND3
-  heartDistanceOption = heartDistanceOptionDefault;
-  int powerMinusRSSI = NVS.getInt("heartPowerMinusRSSI", heartPowerMinusRSSITable[heartDistanceOption]);
-  for (unsigned i=0;i<sizeof(heartPowerMinusRSSITable)/sizeof(*heartPowerMinusRSSITable);i++) {
-    if (heartPowerMinusRSSITable[i] == powerMinusRSSI) {
-      heartDistanceOption = i;
-      break;
-    }
-  }
-  heartPowerMinusRSSIMax = heartPowerMinusRSSITable[heartDistanceOption];
-
   if (heartEnabled) {
     bandAddress = NVS.getInt("bandAddress", 0);
     Serial.printf("Band address: %llx\n", bandAddress);
@@ -733,10 +698,6 @@ unsigned getSuboption(unsigned option) {
       return heartEnabled ? 1 : 0;
     case SHOW_PELETON:
       return showPeleton ? 1 : 0;
-#ifdef HEART_MIBAND3      
-    case HEART_DISTANCE:
-      return heartDistanceOption;
-#endif      
     //case CLEAR:
     default:
       return 0;
@@ -782,11 +743,6 @@ void setSuboption(unsigned option, unsigned subOption) {
       pedalledTime = 0;
       break;
 #ifdef HEART_MIBAND3      
-    case HEART_DISTANCE:
-      heartDistanceOption = subOption;
-      heartPowerMinusRSSIMax = heartPowerMinusRSSITable[heartDistanceOption];
-      NVS.setInt("heartPowerMinusRSSI", heartPowerMinusRSSIMax);
-      break;
     case RESCAN_MIBAND:
       NVS.setInt("bandAddress", 0);
       bandAddress = 0;
