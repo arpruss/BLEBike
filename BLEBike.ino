@@ -10,6 +10,7 @@
 
 #define POWER
 #define CADENCE
+//#define FITNESS
 #define HEART_MIBAND3 
 #define HEART_ADV_UUID16 0xFEE0 
 //#define HEART_PIN 19 // untested
@@ -109,6 +110,7 @@ const uint32_t longPressTime = 2000;
 bool cadenceEnabled = true;
 bool powerEnabled = true;
 bool heartEnabled = true;
+bool fitnessEnabled = true;
 bool showPeleton = true;
 bool updateBluetooth = false;
 
@@ -180,6 +182,10 @@ byte brightnessValue;
 byte savedBrightnessValue;
 
 // references: https://github.com/sputnikdev/bluetooth-gatt-parser/blob/master/src/main/resources/gatt/characteristic/
+// https://github.com/oesmith/gatt-xml/
+// https://www.bluetooth.com/specifications/specs/fitness-machine-service-1-0/
+
+#define ID(x) (NimBLEUUID((uint16_t)(x)))
 
 struct CSCMeasurement_t {
   uint8_t flags; // bit 0: wheel data present; bit 1: crank data present
@@ -190,6 +196,7 @@ struct CSCMeasurement_t {
   uint16_t crankRevolutions;
   uint16_t lastCrankEvent;
 } __packed;
+
 CSCMeasurement_t cscMeasurement = { .flags = (1<<1) // crank data
 #ifdef WHEEL
   |(1<<0)
@@ -207,6 +214,7 @@ struct PowerMeasurement_t {
   uint16_t crankRevolutions;
   uint16_t lastCrankEvent;
 } __packed;
+
 PowerMeasurement_t powerMeasurement = { .flags = 
   (1<<5) // crank data
 //#ifdef WHEEL
@@ -242,9 +250,50 @@ struct HeartMeasurement16_t {
 
 HeartMeasurement8_t heartMeasurement16 = { .flags = 1 };
 
-bool bleConnected = false;
+#ifdef FITNESS
+struct FitnessFeature_t {
+  uint32_t machineFeatures;
+  uint32_t targetSettingFeatures;
+} __packed;
 
-#define ID(x) (NimBLEUUID((uint16_t)(x)))
+#define FITNESS_FEATURE_CADENCE (1<<1)
+#define FITNESS_FEATURE_RESISTANCE (1<<7)
+#define FITNESS_FEATURE_HEART (1<<10)
+#define FITNESS_FEATURE_POWER (1<14)
+#define FITNESS_UUID16 0x1826
+#define FITNESS_UUID ID(FITNESS_UUID16)
+
+FitnessFeature_t fitnessFeature = { 
+  .machineFeatures = FITNESS_FEATURE_CADENCE|FITNESS_FEATURE_RESISTANCE|FITNESS_FEATURE_POWER,
+};
+
+struct FitnessServiceData_t {
+  uint8_t flags;
+  uint16_t machineType;
+} __packed;
+
+const FitnessServiceData_t fitnessServiceData {
+  .flags = 1,
+  .machineType = (1<<5) // indoor bike
+};
+
+struct BikeData_t {
+  uint16_t flags;
+  uint16_t cadence;
+  uint16_t resistance;
+  uint16_t power;
+  uint8_t heart;
+} __packed;
+
+#define BIKE_DATA_FLAG_HEART (1<<9)
+
+BikeData_t bikeData = {
+  .flags = (1<<1)|(1<<5)|(1<<6) // cadence,resistance,power
+};
+
+#endif
+
+bool bleConnected = false;
 
 #ifdef CADENCE
 #define CADENCE_UUID ID(0x1816)
@@ -268,6 +317,11 @@ NimBLECharacteristic heartSensorLocationCharacteristics(ID(0x2A38), NIMBLE_PROPE
 #ifdef HEART_ADV_UUID16
 NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
 #endif
+#endif
+
+#ifdef FITNESS
+NimBLECharacteristic bikeCharacteristics(ID(0x2AD2), NIMBLE_PROPERTY::NOTIFY);
+NimBLECharacteristic bikeFeatureCharacteristics(ID(0x2ACC), NIMBLE_PROPERTY::READ);
 #endif
 
 #define MAX_SUBOPTIONS 2
@@ -314,6 +368,24 @@ class MyServerCallbacks:public NimBLEServerCallbacks
   {
     Serial.println("connected");
     bleConnected = true;
+    if (pServer->getConnectedCount() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS
+#ifdef HEART_MIBAND3
+    -1
+#endif    
+    ) {
+      /*
+      NimBLEAdvertisementData data;
+      data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
+      data.setName(DEVICE_NAME);
+      const std::vector< NimBLEUUID > services { HEART_UUID }; // , CADENCE_UUID, POWER_UUID };
+      
+      data.setCompleteServices16(services);
+      NimBLEDevice::getAdvertising()->setAdvertisementData(data); */
+      
+      BLEDevice::startAdvertising();
+    } else {
+      BLEDevice::stopAdvertising();
+    }
   };
 
   void onDisconnect(NimBLEServer* pServer)
@@ -400,13 +472,14 @@ void startHeartScan() {
 }
 #endif
 
+// heart+cadence -> cadence only
 
 void InitNimBLE()
 {
   if (!powerEnabled && !cadenceEnabled && !heartEnabled)
     return;
   
-  NimBLEDevice::init("Omega Centauri " DEVICE_NAME);
+  NimBLEDevice::init(DEVICE_NAME);
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
@@ -464,14 +537,43 @@ void InitNimBLE()
   }
 #endif
 
-  NimBLEAdvertisementData data;
-  data.setManufacturerData("\xE5\x02Omega Centauri"); // use Espressif's manufacturer code
-  data.setName(DEVICE_NAME);
-
-  pAdvertising->setScanResponseData(data);
-  pAdvertising->setScanResponse(true);
+#ifdef FITNESS
+  if (fitnessEnabled) {
+    NimBLEAdvertisementData data;
+    data.setName(DEVICE_NAME);
+    std::vector< NimBLEUUID > services;
+#ifdef HEART
+    if (heartEnabled) 
+      services.push_back(HEART_UUID);
+#endif  
+#ifdef CADENCE
+    if (cadenceEnabled) 
+      services.push_back(CADENCE_UUID);
+#endif  
+#ifdef POWER
+    if (powerEnabled) 
+      services.push_back(POWER_UUID);
+#endif  
+    services.push_back(FITNESS_UUID);
+    std::string sd( (char*)fitnessServiceData, sizeof(fitnessServiceData));
+    data.setServiceData(sd);
+    data.setCompleteServices16(services);
+    pAdvertising->setScanResponseData(data); 
+    pAdvertising->setScanResponse(true);
+  }
+  else {
+    pAdvertising->setScanResponse(false);
+  }
+#else
+  pAdvertising->setScanResponse(false);
+#endif  
   pAdvertising->setMinPreferred(0x06);  // functions that allegedly help with iPhone connections issue
   pAdvertising->setMaxPreferred(0x12);
+
+  pAdvertising->setMaxInterval(250);
+  pAdvertising->setMinInterval(160);
+
+  pServer->advertiseOnDisconnect(true);
   NimBLEDevice::startAdvertising();
 
 #ifdef HEART_MIBAND3
@@ -612,6 +714,10 @@ void clear()
 
 void setup()
 {
+//uint8_t new_mac[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x07};
+//esp_base_mac_addr_set(new_mac);
+
+  
   pinMode(BACKLIGHT, OUTPUT);
   dacWrite(BACKLIGHT,brightnessValue);
   lcd.begin(COLS,ROWS);
@@ -649,6 +755,7 @@ void setup()
   powerEnabled = (bool)NVS.getInt("power", true);
   cadenceEnabled = (bool)NVS.getInt("cadence", true);
   heartEnabled = (bool)NVS.getInt("heart", true);
+  fitnessEnabled = (bool)NVS.getInt("fitness", true);
   showPeleton = (bool)NVS.getInt("peleton", false);
   needToClear = true;
   
@@ -889,6 +996,14 @@ bool menu(DebounceEvent* decP, DebounceEvent* incP) {
   return false;
 }
 
+unsigned getHeartRate() {
+#ifdef HEART  
+  if (millis() < lastHeartRateTime + 6000)
+    return lastHeartRate;
+#endif
+  return 0;  
+}
+
 void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedalledTime, uint32_t resistance, uint32_t rpm)
 {
   if (needToClear) {
@@ -921,7 +1036,8 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
 #ifdef HEART
   if (heartEnabled) {
     setCursor(COLS-3-1,2);
-    if (lastHeartRate && millis() < lastHeartRateTime + 6000) {
+    unsigned hr = getHeartRate();
+    if (hr) {
       print("\2");
       printdigits(3,lastHeartRate);
     }
@@ -1142,6 +1258,26 @@ void loop ()
     }    
   }
 
+#endif
+
+#ifdef FITNESS
+  if (fitnessEnabled) {
+    bikeData.cadence = rpm;
+    bikeData.power = _power;
+    bikeData.resistance = 1 + resistanceValue;
+    unsigned hr = 0;
+    bikeData.flags &= ~BIKE_DATA_FLAG_HEART;
+#ifdef HEART
+    hr = getHeartRate();
+    if (hr) {
+      bikeData.heart = hr;
+      bikeData.flags |= BIKE_DATA_FLAG_HEART;
+    }
+#endif    
+    bikeDataCharacteristics.setValue((uint8_t*)&bikeData,
+      hr ? sizeof(BikeData_t) : sizeof(BikeData_t)-1);
+    bikeDataCharacteristics.notify();
+  }
 #endif
 
 }
