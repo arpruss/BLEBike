@@ -10,7 +10,7 @@
 
 #define POWER
 #define CADENCE
-//#define FITNESS
+#define FITNESS
 #define HEART_MIBAND3 
 #define HEART_ADV_UUID16 0xFEE0 
 //#define HEART_PIN 19 // untested
@@ -107,10 +107,11 @@ const uint32_t heartSensorDebounceTime = 2;
 const uint32_t minimumUpdateTime = 250;
 const uint32_t idleTime = 4000; 
 const uint32_t longPressTime = 2000;
-bool cadenceEnabled = true;
-bool powerEnabled = true;
-bool heartEnabled = true;
-bool fitnessEnabled = true;
+bool cadenceServiceEnabled = true;
+bool powerServiceEnabled = true;
+bool heartServiceEnabled = true;
+bool fitnessServiceEnabled = true;
+bool heartReadEnabled = true;
 bool showPeleton = true;
 bool updateBluetooth = false;
 
@@ -259,12 +260,12 @@ struct FitnessFeature_t {
 #define FITNESS_FEATURE_CADENCE (1<<1)
 #define FITNESS_FEATURE_RESISTANCE (1<<7)
 #define FITNESS_FEATURE_HEART (1<<10)
-#define FITNESS_FEATURE_POWER (1<14)
+#define FITNESS_FEATURE_POWER (1<<14)
 #define FITNESS_UUID16 0x1826
 #define FITNESS_UUID ID(FITNESS_UUID16)
 
 FitnessFeature_t fitnessFeature = { 
-  .machineFeatures = FITNESS_FEATURE_CADENCE|FITNESS_FEATURE_RESISTANCE|FITNESS_FEATURE_POWER,
+  .machineFeatures = FITNESS_FEATURE_CADENCE|FITNESS_FEATURE_RESISTANCE|FITNESS_FEATURE_POWER
 };
 
 struct FitnessServiceData_t {
@@ -287,8 +288,9 @@ struct BikeData_t {
 
 #define BIKE_DATA_FLAG_HEART (1<<9)
 
+// https://github.com/oesmith/gatt-xml/blob/master/org.bluetooth.characteristic.indoor_bike_data.xml seems to have some errors!
 BikeData_t bikeData = {
-  .flags = (1<<1)|(1<<5)|(1<<6) // cadence,resistance,power
+  .flags = (1)|(1<<2)|(1<<5)|(1<<6) // more data,cadence,resistance,power
 };
 
 #endif
@@ -320,8 +322,8 @@ NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
 #endif
 
 #ifdef FITNESS
-NimBLECharacteristic bikeCharacteristics(ID(0x2AD2), NIMBLE_PROPERTY::NOTIFY);
-NimBLECharacteristic bikeFeatureCharacteristics(ID(0x2ACC), NIMBLE_PROPERTY::READ);
+NimBLECharacteristic bikeDataCharacteristics(ID(0x2AD2), NIMBLE_PROPERTY::NOTIFY);
+NimBLECharacteristic fitnessFeatureCharacteristics(ID(0x2ACC), NIMBLE_PROPERTY::READ);
 #endif
 
 #define MAX_SUBOPTIONS 2
@@ -336,6 +338,7 @@ enum {
   SHOW_PELETON,
   SEND_CADENCE,
   SEND_POWER,
+  SEND_FITNESS,
   SEND_HEART,
   CLEAR,
   RESUME,
@@ -350,8 +353,11 @@ MenuEntry_t menuData[] = {
 #ifdef CADENCE  
   { SEND_CADENCE, "Send cadence", { "No", "Yes" } },
 #endif
+#ifdef FITNESS
+  { SEND_FITNESS, "Send fitness", { "No", "Yes" } },
+#endif  
 #ifdef HEART
-  { SEND_HEART, "Heart rate", { "No", "Yes" } },
+  { SEND_HEART, "Send heart", { "No", "Yes" } },
 #endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear current data", {NULL} },
@@ -476,16 +482,17 @@ void startHeartScan() {
 
 void InitNimBLE()
 {
-  if (!powerEnabled && !cadenceEnabled && !heartEnabled)
+  if (!powerServiceEnabled && !cadenceServiceEnabled && !heartReadEnabled && !fitnessServiceEnabled)
     return;
   
   NimBLEDevice::init(DEVICE_NAME);
+
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
 
 #ifdef CADENCE
-  if (cadenceEnabled) {
+  if (cadenceServiceEnabled) {
     Serial.println("cadence data");
     NimBLEService *pCadence = pServer->createService(CADENCE_UUID);
   
@@ -501,7 +508,7 @@ void InitNimBLE()
 #endif
 
 #ifdef POWER
-  if (powerEnabled) {
+  if (powerServiceEnabled) {
     Serial.println("power data");
     NimBLEService *pPower = pServer->createService(POWER_UUID);
   
@@ -520,7 +527,7 @@ void InitNimBLE()
 #endif
 
 #ifdef HEART
-  if (heartEnabled) {
+  if (heartServiceEnabled) {
     Serial.println("heart data");
     NimBLEService *pHeart = pServer->createService(HEART_UUID);
   
@@ -538,26 +545,44 @@ void InitNimBLE()
 #endif
 
 #ifdef FITNESS
-  if (fitnessEnabled) {
+  if (fitnessServiceEnabled) {
+    Serial.println("fitness data");
+    NimBLEService *pFitness = pServer->createService(FITNESS_UUID);
+  
+    pFitness->addCharacteristic(&bikeDataCharacteristics);
+    pFitness->addCharacteristic(&fitnessFeatureCharacteristics);
+#ifdef HEART   
+    if (heartServiceEnabled) {
+      fitnessFeature.machineFeatures |= FITNESS_FEATURE_HEART;      
+    }
+    Serial.println(fitnessFeature.machineFeatures,HEX);
+#endif
+    fitnessFeatureCharacteristics.setValue((uint8_t*)&fitnessFeature, sizeof(fitnessFeature));
+
+    pAdvertising->addServiceUUID(FITNESS_UUID);
+  
+    pFitness->start();
     NimBLEAdvertisementData data;
+#if 0
     data.setName(DEVICE_NAME);
     std::vector< NimBLEUUID > services;
 #ifdef HEART
-    if (heartEnabled) 
+    if (heartServiceEnabled) 
       services.push_back(HEART_UUID);
 #endif  
 #ifdef CADENCE
-    if (cadenceEnabled) 
+    if (cadenceServiceEnabled) 
       services.push_back(CADENCE_UUID);
 #endif  
 #ifdef POWER
-    if (powerEnabled) 
+    if (powerServiceEnabled) 
       services.push_back(POWER_UUID);
 #endif  
     services.push_back(FITNESS_UUID);
-    std::string sd( (char*)fitnessServiceData, sizeof(fitnessServiceData));
-    data.setServiceData(sd);
     data.setCompleteServices16(services);
+#endif    
+    std::string sd( (char*)&fitnessServiceData, sizeof(fitnessServiceData));
+    data.setServiceData(FITNESS_UUID, sd);
     pAdvertising->setScanResponseData(data); 
     pAdvertising->setScanResponse(true);
   }
@@ -576,8 +601,9 @@ void InitNimBLE()
   pServer->advertiseOnDisconnect(true);
   NimBLEDevice::startAdvertising();
 
+// TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
 #ifdef HEART_MIBAND3
-  if (heartEnabled) {
+  if (heartReadEnabled) {
     bandAddress = NVS.getInt("bandAddress", 0);
     Serial.printf("Band address: %llx\n", bandAddress);
     heartScan = NimBLEDevice::getScan();
@@ -587,6 +613,9 @@ void InitNimBLE()
     startHeartScan();
   }
 #endif  
+  
+  
+
 }
 
 void setResistance(uint32_t value) {  
@@ -752,10 +781,28 @@ void setup()
   savedResistanceValue = resistanceValue;
   setBrightness(NVS.getInt("bright", defaultBrightnessValue));
   savedBrightnessValue = brightnessValue;
-  powerEnabled = (bool)NVS.getInt("power", true);
-  cadenceEnabled = (bool)NVS.getInt("cadence", true);
-  heartEnabled = (bool)NVS.getInt("heart", true);
-  fitnessEnabled = (bool)NVS.getInt("fitness", true);
+#ifdef POWER  
+  powerServiceEnabled = (bool)NVS.getInt("power", true);
+#else
+  powerServiceEnabled = false;
+#endif
+#ifdef CADENCE
+  cadenceServiceEnabled = (bool)NVS.getInt("cadence", true);
+#else
+  cadenceServiceEnabled = false;
+#endif
+#ifdef FITNESS
+  fitnessServiceEnabled = (bool)NVS.getInt("fitness", true);
+#else
+  fitnessServiceEnabled = false;
+#endif
+#ifdef HEART
+  heartServiceEnabled = (bool)NVS.getInt("heart", true);
+  heartReadEnabled = heartServiceEnabled || fitnessServiceEnabled;
+#else
+  heartServiceEnabled = false;
+  heartReadEnabled = false;
+#endif  
   showPeleton = (bool)NVS.getInt("peleton", false);
   needToClear = true;
   
@@ -798,11 +845,13 @@ void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
 unsigned getSuboption(unsigned option) {
   switch(menuData[option].key) {
     case SEND_CADENCE:
-      return cadenceEnabled ? 1 : 0;
+      return cadenceServiceEnabled ? 1 : 0;
+    case SEND_FITNESS:
+      return fitnessServiceEnabled ? 1 : 0;
     case SEND_POWER:
-      return powerEnabled ? 1 : 0;
+      return powerServiceEnabled ? 1 : 0;
     case SEND_HEART:
-      return heartEnabled ? 1 : 0;
+      return heartServiceEnabled ? 1 : 0;
     case SHOW_PELETON:
       return showPeleton ? 1 : 0;
     //case CLEAR:
@@ -814,23 +863,30 @@ unsigned getSuboption(unsigned option) {
 void setSuboption(unsigned option, unsigned subOption) {
   switch(menuData[option].key) {
     case SEND_CADENCE:
-      if ( cadenceEnabled != ( subOption != 0 ) ) {
-        cadenceEnabled = (subOption != 0);
-        NVS.setInt("cadence", (int)cadenceEnabled);
+      if ( cadenceServiceEnabled != ( subOption != 0 ) ) {
+        cadenceServiceEnabled = (subOption != 0);
+        NVS.setInt("cadence", (int)cadenceServiceEnabled);
         updateBluetooth = true;
       }
       break;
     case SEND_POWER:
-      if ( powerEnabled != ( subOption != 0 ) ) {
-        powerEnabled = (subOption != 0);
-        NVS.setInt("power", (int)powerEnabled);
+      if ( powerServiceEnabled != ( subOption != 0 ) ) {
+        powerServiceEnabled = (subOption != 0);
+        NVS.setInt("power", (int)powerServiceEnabled);
+        updateBluetooth = true;
+      }
+      break;
+    case SEND_FITNESS:
+      if ( fitnessServiceEnabled != ( subOption != 0 ) ) {
+        fitnessServiceEnabled = (subOption != 0);
+        NVS.setInt("fitness", (int)fitnessServiceEnabled);
         updateBluetooth = true;
       }
       break;
     case SEND_HEART:
-      if ( heartEnabled != ( subOption != 0 ) ) {
-        heartEnabled = (subOption != 0);
-        NVS.setInt("heart", (int)heartEnabled);
+      if ( heartServiceEnabled != ( subOption != 0 ) ) {
+        heartServiceEnabled = (subOption != 0);
+        NVS.setInt("heart", (int)heartServiceEnabled);
         updateBluetooth = true;
       }
       break;
@@ -1034,7 +1090,7 @@ void show(uint32_t crankRevolution,uint32_t power,uint32_t joules,uint32_t pedal
   }
 
 #ifdef HEART
-  if (heartEnabled) {
+  if (heartReadEnabled) {
     setCursor(COLS-3-1,2);
     unsigned hr = getHeartRate();
     if (hr) {
@@ -1196,7 +1252,7 @@ void loop ()
 #endif      
 
 #ifdef POWER
-  if (powerEnabled) {
+  if (powerServiceEnabled) {
     powerMeasurementCharacteristics.setValue((uint8_t*)&powerMeasurement, sizeof(powerMeasurement));
     powerMeasurementCharacteristics.notify();
   }
@@ -1210,16 +1266,14 @@ void loop ()
 #endif  
 
 #ifdef CADENCE
-  if (cadenceEnabled) {
+  if (cadenceServiceEnabled) {
     cscMeasurementCharacteristics.setValue((uint8_t*)&cscMeasurement, sizeof(cscMeasurement));
     cscMeasurementCharacteristics.notify();
   }
 #endif  
 
 #ifdef HEART
-  if (!heartEnabled)
-    return;
-#endif
+  if (heartReadEnabled) {
 
 #ifdef HEART_PIN
   static uint32_t lastHeartRateUpdate = 0;
@@ -1228,16 +1282,18 @@ void loop ()
     uint16_t heartRate = (1000 + lastHeartBeatDuration/2) / lastHeartBeatDuration;
     lastHeartRate = heartRate;
     lastHeartRateTime = prevHeartBeat;
-    
-    if (heartRate <= 255) {
-      heartMeasurement8.heartRate = heartRate;
-      heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement8, sizeof(HeartMeasurement8_t));
+
+    if (heartServiceEnabled) {    
+      if (heartRate <= 255) {
+        heartMeasurement8.heartRate = heartRate;
+        heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement8, sizeof(HeartMeasurement8_t));
+      }
+      else {
+        heartMeasurement8.heartRate = heartRate;
+        heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement16, sizeof(HeartMeasurement16_t));
+      }
+      heartMeasurementCharacteristics.notify();
     }
-    else {
-      heartMeasurement8.heartRate = heartRate;
-      heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement16, sizeof(HeartMeasurement16_t));
-    }
-    heartMeasurementCharacteristics.notify();
     lastHeartRateUpdate = millis();
   }
 #endif  
@@ -1245,7 +1301,8 @@ void loop ()
 #ifdef HEART_MIBAND3
   if (needToReportHeartRate) {
     needToReportHeartRate = false;
-    if (lastHeartRate > 0) {
+    
+    if (heartServiceEnabled && lastHeartRate > 0) {
       if (lastHeartRate <= 255) {
         heartMeasurement8.heartRate = lastHeartRate;
         heartMeasurementCharacteristics.setValue((uint8_t*)&heartMeasurement8, sizeof(HeartMeasurement8_t));
@@ -1258,10 +1315,13 @@ void loop ()
     }    
   }
 
+
+#endif
+}
 #endif
 
 #ifdef FITNESS
-  if (fitnessEnabled) {
+  if (fitnessServiceEnabled) {
     bikeData.cadence = rpm;
     bikeData.power = _power;
     bikeData.resistance = 1 + resistanceValue;
