@@ -12,13 +12,15 @@
 #define CADENCE
 #define FITNESS
 #define HEART_MIBAND3 
-#define HEART_ADV_UUID16 0xFEE0 
+#define HEART_MIBAND_UUID16 0xFEE0 
 //#define HEART_PIN 19 // untested
+//#define HEART_CLIENT
+
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
-#if defined(HEART_MIBAND3) || defined(HEART_PIN)
+#if defined(HEART_MIBAND3) || defined(HEART_PIN) || defined(HEART_CLIENT)
 # define HEART
 #endif
 
@@ -129,13 +131,22 @@ uint32_t prevHeartBeat = 0;
 #endif
 #ifdef HEART_MIBAND3
 bool needToReportHeartRate = false;
-uint64_t bandAddress=0;
-uint8_t bandAddressType=1;
-int bestBandRSSI=-1000000;
-uint64_t bestBandAddress=0;
+uint64_t heartAddress=0;
+uint8_t heartAddressType=1;
+int bestHeartRSSI=-1000000;
+uint64_t bestHeartAddress=0;
 NimBLEScan* heartScan;
 #define HEART_SENSOR_ON_WRIST
 #endif
+#ifdef HEART_CLIENT
+bool needToReportHeartRate = false;
+uint64_t heartAddress=0;
+uint8_t heartAddressType=1;
+int bestHeartRSSI=-1000000;
+uint64_t bestHeartAddress=0;
+NimBLEScan* heartScan;
+#endif
+
 #ifdef HEART
 uint32_t lastHeartRate = 0;
 uint32_t lastHeartRateTime = 0;
@@ -316,8 +327,8 @@ NimBLECharacteristic heartMeasurementCharacteristics(ID(0x2A37), NIMBLE_PROPERTY
 #ifdef HEART_SENSOR_ON_WRIST
 NimBLECharacteristic heartSensorLocationCharacteristics(ID(0x2A38), NIMBLE_PROPERTY::READ);
 #endif
-#ifdef HEART_ADV_UUID16
-NimBLEUUID HEART_ADV_UUID((uint16_t)HEART_ADV_UUID16);
+#ifdef HEART_MIBAND_UUID16
+NimBLEUUID MIBAND_ADV_UUID((uint16_t)HEART_MIBAND_UUID16);
 #endif
 #endif
 
@@ -361,8 +372,8 @@ MenuEntry_t menuData[] = {
 #endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear current data", {NULL} },
-#ifdef HEART_MIBAND3
-  { RESCAN_MIBAND, "Rescan for MiBand", {NULL} },
+#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
+  { RESCAN_MIBAND, "Rescan for Heart", {NULL} },
 #endif  
 };
 
@@ -375,7 +386,7 @@ class MyServerCallbacks:public NimBLEServerCallbacks
     Serial.println("connected");
     bleConnected = true;
     if (pServer->getConnectedCount() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS
-#ifdef HEART_MIBAND3
+#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
     -1
 #endif    
     ) {
@@ -402,20 +413,22 @@ class MyServerCallbacks:public NimBLEServerCallbacks
   }
 };
 
-#ifdef HEART_MIBAND3
+#if defined( HEART_CLIENT ) || defined( HEART_MIBAND3 )
 void heartRate(unsigned rate) {
    lastHeartRate = rate;
    needToReportHeartRate = true;
    lastHeartRateTime = millis();
 }
+#endif
 
+#ifdef HEART_CLIENT
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
-      if (advertisedDevice->getAddress().getType() != bandAddressType) 
+      if (advertisedDevice->getAddress().getType() != heartAddressType) 
         return;
       uint64_t address = (uint64_t)(advertisedDevice->getAddress());
-      if (bandAddress != 0) {
-        if (address != bandAddress) {
+      if (heartAddress != 0) {
+        if (address != heartAddress) {
           return;
         }
       }
@@ -423,11 +436,64 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         if (! advertisedDevice->haveRSSI())
           return;
         int rssi = advertisedDevice->getRSSI();
-        if (address != bestBandAddress && rssi < bestBandRSSI)
+        if (address != bestHeartAddress && rssi < bestHertRSSI)
           return;
-        if (rssi > bestBandRSSI) {
-          bestBandRSSI = rssi;
-          bestBandAddress = address;
+        if (!advertisedDevice->isAdvertisingService( HEART_UUID) && !advertisedDevice->isAdvertisingService( MIBAND_ADV_UUID ))
+          return;
+        if (rssi > bestHeartRSSI) {
+          bestHeartRSSI = rssi;
+          bestHeartAddress = address;
+          Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
+        }
+      }
+    }
+};
+
+//TODO:startHeartClient()
+
+void startHeartScan();
+
+void heartScanDone(NimBLEScanResults res) {
+  Serial.println("reset scan");
+  if (bestHeartAddress != 0) {
+    heartAddress = bestHeartAddress;
+    NVS.setInt("heartAddress", heartAddress);
+    Serial.printf("Saving address: %llx (RSSI %d)\n", heartAddress, bestHeartRSSI);
+    startHeartClient();
+  }
+  else {
+    startHeartScan();
+  }
+}
+
+void startHeartScan() {
+    bestHeartAddress = 0;
+    bestHeartRSSI = -1000000;
+    heartScan->start(30, heartScanDone, false);  
+}
+#endif
+
+
+#ifdef HEART_MIBAND3
+class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
+      if (advertisedDevice->getAddress().getType() != heartAddressType) 
+        return;
+      uint64_t address = (uint64_t)(advertisedDevice->getAddress());
+      if (heartAddress != 0) {
+        if (address != heartAddress) {
+          return;
+        }
+      }
+      else {
+        if (! advertisedDevice->haveRSSI())
+          return;
+        int rssi = advertisedDevice->getRSSI();
+        if (address != bestHeartAddress && rssi < bestHeartRSSI)
+          return;
+        if (rssi > bestHeartRSSI) {
+          bestHeartRSSI = rssi;
+          bestHeartAddress = address;
           Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
         }
       }
@@ -449,29 +515,29 @@ void startHeartScan();
 
 void heartScanDone(NimBLEScanResults res) {
   Serial.println("reset scan");
-  if (bandAddress == 0 && bestBandAddress != 0) {
-    bandAddress = bestBandAddress;
-    NVS.setInt("bandAddress", bandAddress);
-    Serial.printf("Saving address: %llx (RSSI %d)\n", bandAddress, bestBandRSSI);
+  if (heartAddress == 0 && bestHeartAddress != 0) {
+    heartAddress = bestHeartAddress;
+    NVS.setInt("heartAddress", heartAddress);
+    Serial.printf("Saving address: %llx (RSSI %d)\n", heartAddress, bestHeartRSSI);
   }
   startHeartScan();
 }
 
 void startHeartScan() {
-    if (bandAddress != 0) {
+    if (heartAddress != 0) {
       size_t count = NimBLEDevice::getWhiteListCount();
-      if (count == 0 || (uint64_t)NimBLEDevice::getWhiteListAddress(0) != bandAddress) {
+      if (count == 0 || (uint64_t)NimBLEDevice::getWhiteListAddress(0) != heartAddress) {
         Serial.println("resetting whitelist");
         for (int i = count - 1 ; i >= 0 ; i--)
           NimBLEDevice::whiteListRemove(NimBLEDevice::getWhiteListAddress(i));
-        BLEAddress toAdd(bandAddress,bandAddressType);
+        BLEAddress toAdd(heartAddress,heartAddressType);
         NimBLEDevice::whiteListAdd(toAdd);
       }
       heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_USE_WL);
     }
     else {
-      bestBandAddress = 0;
-      bestBandRSSI = -1000000;
+      bestHeartAddress = 0;
+      bestHeartRSSI = -1000000;
       heartScan->setFilterPolicy(BLE_HCI_SCAN_FILT_NO_WL);
     }
     heartScan->start(30, heartScanDone, false);  
@@ -604,8 +670,8 @@ void InitNimBLE()
 // TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
 #ifdef HEART_MIBAND3
   if (heartReadEnabled) {
-    bandAddress = NVS.getInt("bandAddress", 0);
-    Serial.printf("Band address: %llx\n", bandAddress);
+    heartAddress = NVS.getInt("heartAddress", 0);
+    Serial.printf("Band address: %llx\n", heartAddress);
     heartScan = NimBLEDevice::getScan();
     heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
     heartScan->setActiveScan(true);
@@ -614,6 +680,22 @@ void InitNimBLE()
   }
 #endif  
   
+// TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
+#ifdef HEART_CLIENT
+  if (heartReadEnabled) {
+    heartAddress = NVS.getInt("heartAddress", 0);
+    Serial.printf("Heart address: %llx\n", heartAddress);
+    if (heartAddress == 0)
+      startHeartClient();
+    else {
+      heartScan = NimBLEDevice::getScan();
+      heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
+      heartScan->setActiveScan(true);
+      heartScan->setMaxResults(0);
+      startHeartScan();
+    }
+  }
+#endif  
   
 
 }
@@ -907,9 +989,9 @@ void setSuboption(unsigned option, unsigned subOption) {
       break;
 #ifdef HEART_MIBAND3      
     case RESCAN_MIBAND:
-      NVS.setInt("bandAddress", 0);
-      bandAddress = 0;
-      bestBandAddress = 0;
+      NVS.setInt("heartAddress", 0);
+      heartAddress = 0;
+      bestHeartAddress = 0;
       lastHeartRate = 0;
       heartScan->stop();
       break;
@@ -1201,7 +1283,7 @@ void loop ()
   uint32_t t = millis();
 
   if (! detectedRotation && 
-#ifdef HEART_MIBAND3
+#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
   ! needToReportHeartRate &&
 #endif  
   lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
