@@ -145,6 +145,13 @@ uint8_t heartAddressType=1;
 int bestHeartRSSI=-1000000;
 uint64_t bestHeartAddress=0;
 NimBLEScan* heartScan;
+NimBLEClient* heartClient = NULL;
+NimBLEAdvertisedDevice* heartDevice;
+bool needToConnectHeart = false;
+uint32_t heartConnectAttemptTime;
+unsigned heartConnectRetry=0;
+const unsigned heartConnectRetries=5;
+const uint32_t heartConnectRetryTime = 10000;
 #endif
 
 #ifdef HEART
@@ -353,7 +360,7 @@ enum {
   SEND_HEART,
   CLEAR,
   RESUME,
-  RESCAN_MIBAND,
+  RESCAN_HEART
 };
 
 MenuEntry_t menuData[] = {
@@ -373,7 +380,7 @@ MenuEntry_t menuData[] = {
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear current data", {NULL} },
 #if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
-  { RESCAN_MIBAND, "Rescan for Heart", {NULL} },
+  { RESCAN_HEART, "Rescan for HRM", {NULL} },
 #endif  
 };
 
@@ -413,7 +420,11 @@ class MyServerCallbacks:public NimBLEServerCallbacks
   }
 };
 
+MyServerCallbacks serverCallbacks;
+
 #if defined( HEART_CLIENT ) || defined( HEART_MIBAND3 )
+
+
 void heartRate(unsigned rate) {
    lastHeartRate = rate;
    needToReportHeartRate = true;
@@ -422,6 +433,34 @@ void heartRate(unsigned rate) {
 #endif
 
 #ifdef HEART_CLIENT
+void heartDataCallback( NimBLERemoteCharacteristic* chr, uint8_t* data, size_t length, bool isNotify) {
+  if (length < 1)
+    return;
+  if (data[0] & 1) {
+    if (length < 3)
+      return;
+    heartRate( data[1] + 256 * data[2] );
+  }
+  else {
+    if (length < 2)
+      return;
+    heartRate( data[1] );
+  }
+}
+
+
+
+class HeartCallbacks: public NimBLEClientCallbacks {
+  void onDisconnect() {
+    Serial.println("heart device disconnected");
+    needToConnectHeart = true;
+    heartConnectAttemptTime = millis() + 1000 - heartConnectRetryTime;
+  }
+};
+
+HeartCallbacks heartCallbacks;
+
+
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
       if (advertisedDevice->getAddress().getType() != heartAddressType) 
@@ -436,39 +475,95 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         if (! advertisedDevice->haveRSSI())
           return;
         int rssi = advertisedDevice->getRSSI();
-        if (address != bestHeartAddress && rssi < bestHertRSSI)
+        if (address != bestHeartAddress && rssi < bestHeartRSSI)
           return;
-        if (!advertisedDevice->isAdvertisingService( HEART_UUID) && !advertisedDevice->isAdvertisingService( MIBAND_ADV_UUID ))
+        if (!advertisedDevice->isAdvertisingService( HEART_UUID)) // && !advertisedDevice->isAdvertisingService( MIBAND_ADV_UUID ))
           return;
         if (rssi > bestHeartRSSI) {
           bestHeartRSSI = rssi;
           bestHeartAddress = address;
+          heartDevice = advertisedDevice;
           Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
         }
       }
     }
 };
 
-//TODO:startHeartClient()
+bool doHeartConnect() {  
+//  Serial.println("need to connect heart");
+  heartClient->setClientCallbacks(&heartCallbacks, false);
+//  Serial.printf("connecting to %llx\n", heartAddress);
+  heartClient->setConnectionParams(12, 12, 0, 100);
+  heartClient->setConnectTimeout(5);
+  heartClient->disconnect();
+  if ( ! heartClient->connect(NimBLEAddress(heartAddress, 1)) ) {
+//    Serial.println("heart connect fail");
+    return false;
+  } 
+  else {
+    Serial.println("heart connect success");
+    NimBLERemoteService* service = heartClient->getService(HEART_UUID);
+    if (service == NULL) {
+//      Serial.println("fail in getting service");
+      heartClient->disconnect();
+      return false;
+    }
+    else {      
+      Serial.println("success getting service");
+      NimBLERemoteCharacteristic *chr = service->getCharacteristic(ID(0x2A37));
+      if (chr == NULL) {
+        Serial.println("fail in getting characteristic");
+        heartClient->disconnect();
+        return false;
+      }
+      Serial.println("got characteristic");
+      // TODO: check ret value
+      chr->subscribe(true, heartDataCallback, false);
+      Serial.println("subscribed");
+      return true;
+    }
+  }
+}
 
-void startHeartScan();
+void heartConnectTask(void* args) {
+  needToConnectHeart = false;
+  if (!doHeartConnect()) {
+    heartConnectRetry++;
+    if (heartConnectRetry > heartConnectRetries) {
+      needToConnectHeart = false;
+    }
+    else {
+      needToConnectHeart = true;
+      heartConnectAttemptTime = millis();
+    }
+  }
+}
+
+void heartConnect(void) {
+//  xTaskCreate(heartConnectTask, "heart connect", 10000, NULL, 1, NULL);
+  heartConnectTask(NULL);
+  Serial.println("created connection task");
+}
 
 void heartScanDone(NimBLEScanResults res) {
-  Serial.println("reset scan");
   if (bestHeartAddress != 0) {
     heartAddress = bestHeartAddress;
     NVS.setInt("heartAddress", heartAddress);
     Serial.printf("Saving address: %llx (RSSI %d)\n", heartAddress, bestHeartRSSI);
-    startHeartClient();
+    heartConnectRetry = 0;
+    heartConnect();
   }
   else {
+    Serial.println("reset scan");
     startHeartScan();
   }
 }
 
 void startHeartScan() {
+    needToConnectHeart = false;
     bestHeartAddress = 0;
     bestHeartRSSI = -1000000;
+    Serial.println("scanning");
     heartScan->start(30, heartScanDone, false);  
 }
 #endif
@@ -497,7 +592,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
           Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
         }
       }
-      std::string serviceData = advertisedDevice->getServiceData(HEART_ADV_UUID);
+      std::string serviceData = advertisedDevice->getServiceData(MIBAND_ADV_UUID);
       unsigned l = serviceData.length();
       if (l < 5)
         return;
@@ -544,7 +639,9 @@ void startHeartScan() {
 }
 #endif
 
-// heart+cadence -> cadence only
+#ifdef HEART_CLIENT
+void heartConnect();
+#endif
 
 void InitNimBLE()
 {
@@ -552,9 +649,32 @@ void InitNimBLE()
     return;
   
   NimBLEDevice::init(DEVICE_NAME);
-
   NimBLEServer *pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+
+// TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
+#ifdef HEART_CLIENT
+  if (heartReadEnabled) {
+    heartClient = NimBLEDevice::createClient();
+    heartScan = NimBLEDevice::getScan();
+    heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
+    heartScan->setActiveScan(true);
+    heartScan->setMaxResults(0);
+    heartAddress = NVS.getInt("heartAddress", 0);
+    Serial.printf("Heart address: %llx\n", heartAddress);
+    if (heartAddress != 0) {
+      Serial.println("will need to connect");
+      needToConnectHeart = true;
+      heartConnectRetry = 0;
+//      heartConnect();
+    }
+    else {
+      needToConnectHeart = false;
+      startHeartScan();
+    }
+  }
+#endif
+
+  pServer->setCallbacks(&serverCallbacks);
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
 
 #ifdef CADENCE
@@ -621,7 +741,6 @@ void InitNimBLE()
     if (heartServiceEnabled) {
       fitnessFeature.machineFeatures |= FITNESS_FEATURE_HEART;      
     }
-    Serial.println(fitnessFeature.machineFeatures,HEX);
 #endif
     fitnessFeatureCharacteristics.setValue((uint8_t*)&fitnessFeature, sizeof(fitnessFeature));
 
@@ -665,6 +784,8 @@ void InitNimBLE()
   pAdvertising->setMinInterval(160);
 
   pServer->advertiseOnDisconnect(true);
+
+  Serial.println("advertising");
   NimBLEDevice::startAdvertising();
 
 // TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
@@ -679,25 +800,14 @@ void InitNimBLE()
     startHeartScan();
   }
 #endif  
+
+  Serial.println("NimBLE initialized");
   
-// TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
-#ifdef HEART_CLIENT
-  if (heartReadEnabled) {
-    heartAddress = NVS.getInt("heartAddress", 0);
-    Serial.printf("Heart address: %llx\n", heartAddress);
-    if (heartAddress == 0)
-      startHeartClient();
-    else {
-      heartScan = NimBLEDevice::getScan();
-      heartScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(),true);
-      heartScan->setActiveScan(true);
-      heartScan->setMaxResults(0);
-      startHeartScan();
-    }
+#ifdef HEART_CLIENT  
+  if (needToConnectHeart) {
+    heartConnect();
   }
 #endif  
-  
-
 }
 
 void setResistance(uint32_t value) {  
@@ -835,13 +945,13 @@ void setup()
   lcd.createChar(1, bluetoothIcon);
   lcd.createChar(2, heartIcon);
   clear();
-  print("NimBLEBike");
+  print("BLEBike");
   setCursor(0,1);
   print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
   Serial.begin(115200);
-  Serial.println("NimBLEBike start");
+  Serial.println("BLEBike start");
 #ifdef PULLUP_ON_ROTATION_DETECT  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
 #else
@@ -987,13 +1097,18 @@ void setSuboption(unsigned option, unsigned subOption) {
       millijoules = 0;
       pedalledTime = 0;
       break;
-#ifdef HEART_MIBAND3      
-    case RESCAN_MIBAND:
+#if defined(HEART_MIBAND3) || defined(HEART_CLIENT)      
+    case RESCAN_HEART:
       NVS.setInt("heartAddress", 0);
       heartAddress = 0;
       bestHeartAddress = 0;
+      bestHeartRSSI=-1000000;
       lastHeartRate = 0;
-      heartScan->stop();
+      if (heartScan != NULL && heartScan->isScanning()) 
+        heartScan->stop();
+#ifdef HEART_CLIENT
+      startHeartScan();
+#endif      
       break;
 #endif
   }
@@ -1282,6 +1397,13 @@ void loop ()
 
   uint32_t t = millis();
 
+#ifdef HEART_CLIENT
+  if (needToConnectHeart && millis() - heartConnectAttemptTime >= heartConnectRetryTime) {
+    Serial.println("connect request");
+    heartConnect();
+  }
+#endif  
+
   if (! detectedRotation && 
 #if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
   ! needToReportHeartRate &&
@@ -1314,8 +1436,10 @@ void loop ()
   else 
     rpm = 60000 / _lastRotationDuration;
 
+  noInterrupts();
   if (!showedMenu) 
     show(rev, _power, _millijoules/1000, _pedalStartTime ? t - _pedalStartTime : 0, resistanceValue, rpm);
+  interrupts();
 
   lastUpdateTime = t;
 
@@ -1354,9 +1478,6 @@ void loop ()
   }
 #endif  
 
-#ifdef HEART
-  if (heartReadEnabled) {
-
 #ifdef HEART_PIN
   static uint32_t lastHeartRateUpdate = 0;
 
@@ -1380,7 +1501,7 @@ void loop ()
   }
 #endif  
 
-#ifdef HEART_MIBAND3
+#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
   if (needToReportHeartRate) {
     needToReportHeartRate = false;
     
@@ -1396,10 +1517,6 @@ void loop ()
       heartMeasurementCharacteristics.notify();
     }    
   }
-
-
-#endif
-}
 #endif
 
 #ifdef FITNESS
@@ -1421,5 +1538,6 @@ void loop ()
     bikeDataCharacteristics.notify();
   }
 #endif
+
 
 }
