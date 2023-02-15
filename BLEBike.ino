@@ -11,8 +11,7 @@
 #define POWER
 #define CADENCE
 #define FITNESS
-//#define HEART_MIBAND3 
-#define HEART_MIBAND_UcUID16 0xFEE0 
+//#define HEART_BEACON 
 //#define HEART_PIN 19 // untested
 #define HEART_CLIENT
 
@@ -20,9 +19,11 @@
 #define LIBRARY_HD44780
 #define PULLUP_ON_ROTATION_DETECT // handy for debugging
 
-#if defined(HEART_MIBAND3) || defined(HEART_PIN) || defined(HEART_CLIENT)
+#if defined(HEART_BEACON) || defined(HEART_PIN) || defined(HEART_CLIENT)
 # define HEART
 #endif
+
+#define HEART_MIBAND_UcUID16 0xFEE0 
 
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
@@ -129,7 +130,7 @@ uint32_t heartBeats = 0;
 uint32_t lastHeartBeatDuration = 0;
 uint32_t prevHeartBeat = 0;
 #endif
-#ifdef HEART_MIBAND3
+#ifdef HEART_BEACON
 bool needToReportHeartRate = false;
 uint64_t heartAddress=0;
 uint8_t heartAddressType=1;
@@ -383,7 +384,7 @@ MenuEntry_t menuData[] = {
 #if defined( HEART_CLIENT )
   { RECONNECT_HEART, "Reconnect HRM", {NULL} },
 #endif  
-#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
+#if defined( HEART_BEACON ) || defined( HEART_CLIENT )
   { RESCAN_HEART, "Rescan for HRM", {NULL} },
 #endif  
 };
@@ -397,7 +398,7 @@ class MyServerCallbacks:public NimBLEServerCallbacks
     Serial.println("connected");
     bleConnected = true;
     if (pServer->getConnectedCount() < CONFIG_BT_NIMBLE_MAX_CONNECTIONS
-#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
+#if defined( HEART_BEACON ) || defined( HEART_CLIENT )
     -1
 #endif    
     ) {
@@ -426,7 +427,7 @@ class MyServerCallbacks:public NimBLEServerCallbacks
 
 MyServerCallbacks serverCallbacks;
 
-#if defined( HEART_CLIENT ) || defined( HEART_MIBAND3 )
+#if defined( HEART_CLIENT ) || defined( HEART_BEACON )
 
 
 void heartRate(unsigned rate) {
@@ -486,7 +487,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         int rssi = advertisedDevice->getRSSI();
         if (address != bestHeartAddress && rssi < bestHeartRSSI)
           return;
-        if (!advertisedDevice->isAdvertisingService( HEART_UUID)) // && !advertisedDevice->isAdvertisingService( MIBAND_ADV_UUID ))
+        if (!advertisedDevice->isAdvertisingService( HEART_UUID)) 
           return;
         if (rssi > bestHeartRSSI) {
           bestHeartRSSI = rssi;
@@ -579,7 +580,23 @@ void startHeartScan() {
 #endif
 
 
-#ifdef HEART_MIBAND3
+#ifdef HEART_BEACON
+
+uint8_t* getPayloadItem(uint8_t* p, unsigned l, uint8_t type) {
+  if (l<2)
+    return NULL;
+  while (true) {
+    unsigned itemLength = 1 + (unsigned)p[0];
+    if (p[1] == type && itemLength <= l) {
+      return p;
+    }
+    if (itemLength >= l)
+      return NULL;
+    p += itemLength;
+    l -= itemLength;
+  }
+}
+
 class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
       if (advertisedDevice->getAddress().getType() != heartAddressType) 
@@ -596,22 +613,36 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         int rssi = advertisedDevice->getRSSI();
         if (address != bestHeartAddress && rssi < bestHeartRSSI)
           return;
-        if (rssi > bestHeartRSSI) {
-          bestHeartRSSI = rssi;
-          bestHeartAddress = address;
-          Serial.printf("Best found: %llx (RSSI %d)\n", address, rssi);
-        }
-      }
+        Serial.printf("Examining: %llx (RSSI %d)\n", address, rssi);
+      }      
+      bool isGood = false;
+      // check if it's a miband watch broadcasting heart rate
       std::string serviceData = advertisedDevice->getServiceData(MIBAND_ADV_UUID);
       unsigned l = serviceData.length();
-      if (l < 5)
-        return;
-      unsigned char* p = (unsigned char*)(serviceData.data());
       if (l == 5) {
+        unsigned char* p = (unsigned char*)(serviceData.data());
         heartRate(p[4]);
+        isGood = true;
       }
-      else {
-        heartRate(p[4]+256*p[5]);
+      // check if it's a cheap heart strap broadcasting rate
+      if (!isGood && advertisedDevice->isAdvertisingService( HEART_UUID))
+        // look for 0xFF section in advertising
+        uint8_t* payload = advertisedDevice->getPayload();
+        unsigned l = advertisedData->getPayloadLength();
+        uint8_t* item = getPayloadItem(payload, l, 0xFF, NULL);
+        if (item != NULL) {
+          unsigned itemLength = item[0];
+          if (itemLength == 5) {
+            heartRate(p[4]);
+            isGood = true;
+          }
+        }        
+      }
+      
+      if (heartAddress == 0 && rssi > bestHeartRSSI) {
+        bestHeartRSSI = rssi;
+        bestHeartAddress = address;
+        Serial.printf("Best beacon found: %llx (RSSI %d)\n", address, rssi);
       }
     }
 };
@@ -798,7 +829,7 @@ void InitNimBLE()
   NimBLEDevice::startAdvertising();
 
 // TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
-#ifdef HEART_MIBAND3
+#ifdef HEART_BEACON
   if (heartReadEnabled) {
     heartAddress = NVS.getInt("heartAddress", 0);
     Serial.printf("Band address: %llx\n", heartAddress);
@@ -1107,7 +1138,7 @@ void setSuboption(unsigned option, unsigned subOption) {
       millijoules = 0;
       pedalledTime = 0;
       break;
-#if defined(HEART_MIBAND3) || defined(HEART_CLIENT)      
+#if defined(HEART_BEACON) || defined(HEART_CLIENT)      
     case RESCAN_HEART:
       NVS.setInt("heartAddress", 0);
       heartAddress = 0;
@@ -1424,7 +1455,7 @@ void loop ()
 #endif  
 
   if (! detectedRotation && 
-#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
+#if defined( HEART_BEACON ) || defined( HEART_CLIENT )
   ! needToReportHeartRate &&
 #endif  
   lastUpdateTime && t < lastUpdateTime + minimumUpdateTime)
@@ -1520,7 +1551,7 @@ void loop ()
   }
 #endif  
 
-#if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
+#if defined( HEART_BEACON ) || defined( HEART_CLIENT )
   if (needToReportHeartRate) {
     needToReportHeartRate = false;
     
