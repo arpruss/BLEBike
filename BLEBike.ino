@@ -11,10 +11,10 @@
 #define POWER
 #define CADENCE
 #define FITNESS
-#define HEART_MIBAND3 
-#define HEART_MIBAND_UUID16 0xFEE0 
+//#define HEART_MIBAND3 
+#define HEART_MIBAND_UcUID16 0xFEE0 
 //#define HEART_PIN 19 // untested
-//#define HEART_CLIENT
+#define HEART_CLIENT
 
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
@@ -360,6 +360,7 @@ enum {
   SEND_HEART,
   CLEAR,
   RESUME,
+  RECONNECT_HEART,
   RESCAN_HEART
 };
 
@@ -379,6 +380,9 @@ MenuEntry_t menuData[] = {
 #endif  
   { RESUME, "Resume", {NULL} },
   { CLEAR, "Clear current data", {NULL} },
+#if defined( HEART_CLIENT )
+  { RECONNECT_HEART, "Reconnect HRM", {NULL} },
+#endif  
 #if defined( HEART_MIBAND3 ) || defined( HEART_CLIENT )
   { RESCAN_HEART, "Rescan for HRM", {NULL} },
 #endif  
@@ -451,10 +455,15 @@ void heartDataCallback( NimBLERemoteCharacteristic* chr, uint8_t* data, size_t l
 
 
 class HeartCallbacks: public NimBLEClientCallbacks {
-  void onDisconnect() {
-    Serial.println("heart device disconnected");
+  virtual void onDisconnect(NimBLEClient* client) {
+    Serial.println("heart device disconnected event");
+    heartRate(0);
     needToConnectHeart = true;
     heartConnectAttemptTime = millis() + 1000 - heartConnectRetryTime;
+    heartConnectRetry = 0;
+  }
+  virtual void onConnect(NimBLEClient* client) {
+    Serial.println("heart device connected event");
   }
 };
 
@@ -490,21 +499,17 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
 };
 
 bool doHeartConnect() {  
-//  Serial.println("need to connect heart");
   heartClient->setClientCallbacks(&heartCallbacks, false);
-//  Serial.printf("connecting to %llx\n", heartAddress);
   heartClient->setConnectionParams(12, 12, 0, 100);
   heartClient->setConnectTimeout(5);
   heartClient->disconnect();
   if ( ! heartClient->connect(NimBLEAddress(heartAddress, 1)) ) {
-//    Serial.println("heart connect fail");
     return false;
   } 
   else {
     Serial.println("heart connect success");
     NimBLERemoteService* service = heartClient->getService(HEART_UUID);
     if (service == NULL) {
-//      Serial.println("fail in getting service");
       heartClient->disconnect();
       return false;
     }
@@ -526,13 +531,17 @@ bool doHeartConnect() {
 }
 
 void heartConnectTask(void* args) {
+  Serial.println("attempting to connect heart");
   needToConnectHeart = false;
   if (!doHeartConnect()) {
+    Serial.println("connection failed");
     heartConnectRetry++;
     if (heartConnectRetry > heartConnectRetries) {
+      Serial.println("too many retries");
       needToConnectHeart = false;
     }
     else {
+      Serial.println("will retry");
       needToConnectHeart = true;
       heartConnectAttemptTime = millis();
     }
@@ -542,7 +551,6 @@ void heartConnectTask(void* args) {
 void heartConnect(void) {
 //  xTaskCreate(heartConnectTask, "heart connect", 10000, NULL, 1, NULL);
   heartConnectTask(NULL);
-  Serial.println("created connection task");
 }
 
 void heartScanDone(NimBLEScanResults res) {
@@ -563,6 +571,8 @@ void startHeartScan() {
     needToConnectHeart = false;
     bestHeartAddress = 0;
     bestHeartRSSI = -1000000;
+    Serial.println("disconnecting");
+    heartClient->disconnect();
     Serial.println("scanning");
     heartScan->start(30, heartScanDone, false);  
 }
@@ -665,11 +675,10 @@ void InitNimBLE()
       Serial.println("will need to connect");
       needToConnectHeart = true;
       heartConnectRetry = 0;
-//      heartConnect();
     }
     else {
       needToConnectHeart = false;
-      startHeartScan();
+      //startHeartScan();
     }
   }
 #endif
@@ -803,7 +812,8 @@ void InitNimBLE()
 
   Serial.println("NimBLE initialized");
   
-#ifdef HEART_CLIENT  
+#ifdef HEART_CLIENT 
+  Serial.println("heart client?"); 
   if (needToConnectHeart) {
     heartConnect();
   }
@@ -1109,6 +1119,15 @@ void setSuboption(unsigned option, unsigned subOption) {
 #ifdef HEART_CLIENT
       startHeartScan();
 #endif      
+      break;
+#endif
+#if defined(HEART_CLIENT)      
+    case RECONNECT_HEART:
+      if (heartAddress) {
+        heartConnectRetry = 0;
+        needToConnectHeart = true;
+        heartConnectAttemptTime = millis() + 1000 - heartConnectRetryTime;
+      }
       break;
 #endif
   }
