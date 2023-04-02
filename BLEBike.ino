@@ -1532,7 +1532,7 @@ void loop ()
   static uint32_t lastHeartRateUpdate = 0;
 
   if (millis() >= lastHeartRateUpdate + 1000 && lastHeartBeatDuration > 0 && millis() <= prevHeartBeat + 4000) {
-    uint16_t heartRate = (1000 + lastHeartBeatDuration/2) / lastHeartBeatDuration;
+    uint16_t heartRate = (60000 + lastHeartBeatDuration/2) / lastHeartBeatDuration;
     lastHeartRate = heartRate;
     lastHeartRateTime = prevHeartBeat;
 
