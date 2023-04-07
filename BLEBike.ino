@@ -299,7 +299,7 @@ const FitnessServiceData_t fitnessServiceData {
 
 struct BikeData_t {
   uint16_t flags;
-  uint16_t cadence;
+  uint16_t cadence_x2;
   uint16_t resistance;
   uint16_t power;
   uint8_t heart;
@@ -1476,15 +1476,26 @@ void loop ()
   interrupts();
 
   uint32_t rpm;
+  uint32_t rpm_x2;
   uint32_t _power = _lastPower;
-  if (!rev || _lastRotationDuration == 0)
+  if (!rev || _lastRotationDuration == 0) {
     rpm = 0;
-  else if (_lastRotationDuration < t - prevRotationMarker) {
-    rpm = 60000 / (t - prevRotationMarker);
-    _power = calculatePower(t - prevRotationMarker);
+    rpm_x2 = 0;
   }
-  else 
-    rpm = 60000 / _lastRotationDuration;
+  else {
+    uint32_t dt;
+    
+    if (_lastRotationDuration < t - prevRotationMarker) {
+      dt = t - prevRotationMarker;
+      _power = calculatePower(dt);
+    }
+    else {
+      dt = _lastRotationDuration;
+    }
+    
+    rpm = (60000 + dt/2) / dt;
+    rpm_x2 = (120000 + dt/2) / dt;
+  }
 
   noInterrupts();
   if (!showedMenu) 
@@ -1571,7 +1582,7 @@ void loop ()
 
 #ifdef FITNESS
   if (fitnessServiceEnabled) {
-    bikeData.cadence = rpm;
+    bikeData.cadence_x2 = rpm_x2;
     bikeData.power = _power;
     bikeData.resistance = 1 + resistanceValue;
     unsigned hr = 0;
