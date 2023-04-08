@@ -23,7 +23,7 @@
 # define HEART
 #endif
 
-#define HEART_MIBAND_UcUID16 0xFEE0 
+#define HEART_MIBAND_UUID16 0xFEE0 
 
 #define DEVICE_NAME "BLEBike"
 const uint32_t rotationDetectPin = 23;
@@ -602,6 +602,7 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       if (advertisedDevice->getAddress().getType() != heartAddressType) 
         return;
       uint64_t address = (uint64_t)(advertisedDevice->getAddress());
+      int rssi = advertisedDevice->getRSSI();
       if (heartAddress != 0) {
         if (address != heartAddress) {
           return;
@@ -610,7 +611,6 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       else {
         if (! advertisedDevice->haveRSSI())
           return;
-        int rssi = advertisedDevice->getRSSI();
         if (address != bestHeartAddress && rssi < bestHeartRSSI)
           return;
         Serial.printf("Examining: %llx (RSSI %d)\n", address, rssi);
@@ -625,21 +625,21 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
         isGood = true;
       }
       // check if it's a cheap heart strap broadcasting rate
-      if (!isGood && advertisedDevice->isAdvertisingService( HEART_UUID))
+      if (!isGood && (heartAddress != 0 || advertisedDevice->isAdvertisingService(HEART_UUID))) {
         // look for 0xFF section in advertising
         uint8_t* payload = advertisedDevice->getPayload();
-        unsigned l = advertisedData->getPayloadLength();
-        uint8_t* item = getPayloadItem(payload, l, 0xFF, NULL);
+        unsigned l = advertisedDevice->getPayloadLength();
+        uint8_t* item = getPayloadItem(payload, l, 0xFF);
         if (item != NULL) {
           unsigned itemLength = item[0];
-          if (itemLength == 5) {
-            heartRate(p[4]);
+          if (itemLength == 7) {
+            heartRate(item[7]);
             isGood = true;
           }
         }        
       }
       
-      if (heartAddress == 0 && rssi > bestHeartRSSI) {
+      if (heartAddress == 0 && rssi > bestHeartRSSI && isGood) {
         bestHeartRSSI = rssi;
         bestHeartAddress = address;
         Serial.printf("Best beacon found: %llx (RSSI %d)\n", address, rssi);
