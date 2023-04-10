@@ -8,12 +8,15 @@
 #include <ArduinoNvs.h> // https://github.com/rpolitex/ArduinoNvs
 #include "debounce.h"
 
-#define POWER
-#define CADENCE
-#define FITNESS
-//#define HEART_BEACON 
+#define POWER     // power service (includes cadence)
+#define CADENCE   // cadence service
+#define FITNESS   // fitness service: include power, cadence and, optionally, heart
+//#define HEART_BEACON   // get heart rate from advertisement data on a heart rate monitor
+                         // Supports MiBand 3, a cheap Coospo chest strap, some Polar straps (untested),
+                         // and maybe others.
+#define HEART_CLIENT   // get heart rate by connecting to BLE heart rate monitor
+//HEART_PIN mode gets heart rate directly from sensor on bike
 //#define HEART_PIN 19 // untested
-#define HEART_CLIENT
 
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
@@ -627,12 +630,18 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       // check if it's a cheap heart strap broadcasting rate
       if (!isGood && (heartAddress != 0 || advertisedDevice->isAdvertisingService(HEART_UUID))) {
         // look for 0xFF section in advertising
+        
+        // TODO: use getManufacturerData()
         uint8_t* payload = advertisedDevice->getPayload();
         unsigned l = advertisedDevice->getPayloadLength();
         uint8_t* item = getPayloadItem(payload, l, 0xFF);
         if (item != NULL) {
-          unsigned itemLength = item[0];
-          if (itemLength == 7) {
+          unsigned itemLength = item[0]; // not including length
+          if (itemLength == 6 && item[1] == 0x6B && item[2] == 0x00) { // Polar, untested
+            heartRate(item[6]);
+            isGood = true;
+          }
+          if (itemLength == 7) { // cheap heart rate strap; I'm not checking manufacturer
             heartRate(item[7]);
             isGood = true;
           }
