@@ -8,15 +8,24 @@
 #include <ArduinoNvs.h> // https://github.com/rpolitex/ArduinoNvs
 #include "debounce.h"
 
-#define POWER     // power service (includes cadence)
-#define CADENCE   // cadence service
-#define FITNESS   // fitness service: include power, cadence and, optionally, heart
-//#define HEART_BEACON   // get heart rate from advertisement data on a heart rate monitor
-                         // Supports MiBand 3, a cheap Coospo chest strap, some Polar straps (untested),
-                         // and maybe others.
-#define HEART_CLIENT   // get heart rate by connecting to BLE heart rate monitor
-//HEART_PIN mode gets heart rate directly from sensor on bike
+#define SUPPORT_WIFI
+
+#ifdef SUPPORT_WIFI
+#include <WiFi.h>
+#include "/Users/arpruss/Documents/Arduino/private.h"
+IPAddress localIP(MY_IP);
+IPAddress gateway(MY_GATEWAY);
+IPAddress subnet(MY_SUBNET);
+#define MY_PORT 8765
+WiFiServer tcpServer(MY_PORT);
+#endif
+
+#define POWER
+#define CADENCE
+#define FITNESS
+//#define HEART_BEACON 
 //#define HEART_PIN 19 // untested
+#define HEART_CLIENT
 
 //#define WHEEL // Adds WHEEL to cadence; not supported in power as that would need a control point
 #define LIBRARY_HD44780
@@ -120,6 +129,7 @@ bool fitnessServiceEnabled = true;
 bool heartReadEnabled = true;
 bool showPeleton = true;
 bool updateBluetooth = false;
+bool wiFiMode = false;
 
 uint32_t prevRotationMarker = 0;
 uint32_t rotationMarkers = 0;
@@ -507,6 +517,7 @@ bool doHeartConnect() {
   heartClient->setConnectionParams(12, 12, 0, 100);
   heartClient->setConnectTimeout(5);
   heartClient->disconnect();
+  
   if ( ! heartClient->connect(NimBLEAddress(heartAddress, 1)) ) {
     return false;
   } 
@@ -630,18 +641,12 @@ class MyAdvertisedDeviceCallbacks: public NimBLEAdvertisedDeviceCallbacks {
       // check if it's a cheap heart strap broadcasting rate
       if (!isGood && (heartAddress != 0 || advertisedDevice->isAdvertisingService(HEART_UUID))) {
         // look for 0xFF section in advertising
-        
-        // TODO: use getManufacturerData()
         uint8_t* payload = advertisedDevice->getPayload();
         unsigned l = advertisedDevice->getPayloadLength();
         uint8_t* item = getPayloadItem(payload, l, 0xFF);
         if (item != NULL) {
-          unsigned itemLength = item[0]; // not including length
-          if (itemLength == 6 && item[1] == 0x6B && item[2] == 0x00) { // Polar, untested
-            heartRate(item[6]);
-            isGood = true;
-          }
-          if (itemLength == 7) { // cheap heart rate strap; I'm not checking manufacturer
+          unsigned itemLength = item[0];
+          if (itemLength == 7) {
             heartRate(item[7]);
             isGood = true;
           }
@@ -797,24 +802,6 @@ void InitNimBLE()
   
     pFitness->start();
     NimBLEAdvertisementData data;
-#if 0
-    data.setName(DEVICE_NAME);
-    std::vector< NimBLEUUID > services;
-#ifdef HEART
-    if (heartServiceEnabled) 
-      services.push_back(HEART_UUID);
-#endif  
-#ifdef CADENCE
-    if (cadenceServiceEnabled) 
-      services.push_back(CADENCE_UUID);
-#endif  
-#ifdef POWER
-    if (powerServiceEnabled) 
-      services.push_back(POWER_UUID);
-#endif  
-    services.push_back(FITNESS_UUID);
-    data.setCompleteServices16(services);
-#endif    
     std::string sd( (char*)&fitnessServiceData, sizeof(fitnessServiceData));
     data.setServiceData(FITNESS_UUID, sd);
     pAdvertising->setScanResponseData(data); 
@@ -983,9 +970,19 @@ void clear()
   setCursor(0,0);
 }
 
+#ifdef SUPPORT_WIFI
+void InitWiFi() {
+  WiFi.config(localIP, gateway, subnet);
+  //WiFi.mode(WIFI_STA);
+  WiFi.begin(MY_SSID, MY_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED)
+    delay(500);
+  tcpServer.begin();
+}
+#endif
+
 void setup()
 {
-//uint8_t new_mac[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x07};
 //esp_base_mac_addr_set(new_mac);
 
   
@@ -1000,8 +997,15 @@ void setup()
   print("Omega Centauri Soft");
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
+#ifdef SUPPORT_WIFI  
+  while (digitalRead(decPin) == 0)
+    wiFiMode = true;
+#endif    
+  setCursor(0,2);
+  print(wiFiMode ? "WiFi mode" : "BLE mode");
   Serial.begin(115200);
   Serial.println("BLEBike start");
+  Serial.println(wiFiMode ? "WiFi mode" : "BLE mode");
 #ifdef PULLUP_ON_ROTATION_DETECT  
   pinMode(rotationDetectPin, INPUT_PULLUP); 
 #else
@@ -1047,8 +1051,13 @@ void setup()
 #endif  
   showPeleton = (bool)NVS.getInt("peleton", false);
   needToClear = true;
-  
-  InitNimBLE();
+
+#ifdef SUPPORT_WIFI
+  if (wiFiMode)
+    InitWiFi();
+  else
+#endif  
+    InitNimBLE();
 }
 
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
@@ -1411,6 +1420,31 @@ void changeBrightness(int32_t delta) {
     setBrightness(nb);
 }
 
+#ifdef SUPPORT_WIFI
+static WiFiClient remoteClient;
+
+void checkForConnections() {
+  if (tcpServer.hasClient()) {
+    if (remoteClient.connected()) {
+      tcpServer.available().stop();
+    }
+    else {
+      remoteClient = tcpServer.available();
+    }
+  }
+}
+
+void sendWiFi(unsigned power, unsigned rpm, unsigned level) {
+
+  if (remoteClient.connected()) {
+    remoteClient.printf("time %lu\n", millis());
+    remoteClient.printf("power %u\n", power);
+    remoteClient.printf("rpm %u\n", rpm);
+    remoteClient.printf("level %u\n", level);
+  }
+}
+#endif
+
 void loop ()
 {
   DebounceEvent incEvent = incButton.getEvent();
@@ -1453,6 +1487,11 @@ void loop ()
   }
 
   checkSave();
+
+#ifdef SUPPORT_WIFI
+  if (wiFiMode)
+    checkForConnections();
+#endif  
 
   uint32_t t = millis();
 
@@ -1512,6 +1551,13 @@ void loop ()
   interrupts();
 
   lastUpdateTime = t;
+
+#ifdef SUPPORT_WIFI
+  if (wiFiMode) {
+    sendWiFi(_power, rpm, resistanceValue);
+    return;
+  }
+#endif  
 
   if (!bleConnected || updateBluetooth)
     return;
