@@ -704,7 +704,7 @@ void InitNimBLE()
     return;
   
   NimBLEDevice::init(DEVICE_NAME);
-  NimBLEServer *pServer = NimBLEDevice::createServer();
+  NimBLEServer *pServer = wiFiMode ? NULL : NimBLEDevice::createServer();
 
 // TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
 #ifdef HEART_CLIENT
@@ -728,8 +728,13 @@ void InitNimBLE()
   }
 #endif
 
+  NimBLEAdvertising *pAdvertising;
+
+  if (pServer == NULL)
+    goto SKIP_BLE_SERVER;
+    
   pServer->setCallbacks(&serverCallbacks);
-  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising = NimBLEDevice::getAdvertising();
 
 #ifdef CADENCE
   if (cadenceServiceEnabled) {
@@ -823,6 +828,8 @@ void InitNimBLE()
 
   Serial.println("advertising");
   NimBLEDevice::startAdvertising();
+
+SKIP_BLE_SERVER:
 
 // TODO: if all outgoing services are disabled, but this is enabled, we should do this without a server
 #ifdef HEART_BEACON
@@ -1055,9 +1062,8 @@ void setup()
 #ifdef SUPPORT_WIFI
   if (wiFiMode)
     InitWiFi();
-  else
 #endif  
-    InitNimBLE();
+  InitNimBLE();
 }
 
 void printdigits(unsigned n, unsigned x, bool leftAlign=false) {
@@ -1434,15 +1440,6 @@ void checkForConnections() {
   }
 }
 
-void sendWiFi(unsigned power, unsigned rpm, unsigned level) {
-
-  if (remoteClient.connected()) {
-    remoteClient.printf("time %lu\n", millis());
-    remoteClient.printf("power %u\n", power);
-    remoteClient.printf("rpm %u\n", rpm);
-    remoteClient.printf("level %u\n", level);
-  }
-}
 #endif
 
 void loop ()
@@ -1553,9 +1550,22 @@ void loop ()
   lastUpdateTime = t;
 
 #ifdef SUPPORT_WIFI
-  if (wiFiMode) {
-    sendWiFi(_power, rpm, resistanceValue);
+  if (wiFiMode && remoteClient.connected()) {
+    remoteClient.printf("time %lu\n", t);
+    remoteClient.printf("power %u\n", _power);
+    remoteClient.printf("cadence %u\n", rpm);
+    remoteClient.printf("level %u\n", resistanceValue);
+#if defined( HEART_BEACON ) || defined( HEART_CLIENT ) // TODO: add HEART_PIN support
+    static unsigned lastReportedHeartRate = 0;
+    unsigned hr = getHeartRate();
+    if (needToReportHeartRate || lastReportedHeartRate != hr) {
+      needToReportHeartRate = false;      
+      lastReportedHeartRate = hr;
+      remoteClient.printf("heart %u\n", hr);
+    }
+#endif
     return;
+    
   }
 #endif  
 
