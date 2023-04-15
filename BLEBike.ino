@@ -1557,7 +1557,7 @@ void loop ()
     remoteClient.printf("cadence %u\n", rpm);
     remoteClient.printf("level %u\n", resistanceValue);
     if (lastReportedRotationMarker != _prevRotationMarker) {
-      remoteClient.printf("rotation %u\n", _prevRotationMarker);
+      remoteClient.printf("rotation %u %u\n", rev, _prevRotationMarker);
       lastReportedRotationMarker = _prevRotationMarker;
     }
 #if defined( HEART_BEACON ) || defined( HEART_CLIENT ) // TODO: add HEART_PIN support
