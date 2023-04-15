@@ -393,7 +393,7 @@ MenuEntry_t menuData[] = {
   { SEND_HEART, "Send heart", { "No", "Yes" } },
 #endif  
   { RESUME, "Resume", {NULL} },
-  { CLEAR, "Clear current data", {NULL} },
+  { CLEAR, "Clear and reboot", {NULL} },
 #if defined( HEART_CLIENT )
   { RECONNECT_HEART, "Reconnect HRM", {NULL} },
 #endif  
@@ -1002,6 +1002,7 @@ void setup()
   print("BLEBike");
   setCursor(0,1);
   print("Omega Centauri Soft");
+  delay(1000);
   pinMode(incPin, INPUT_PULLUP);
   pinMode(decPin, INPUT_PULLUP);
 #ifdef SUPPORT_WIFI  
@@ -1154,13 +1155,14 @@ void setSuboption(unsigned option, unsigned subOption) {
       }
       break;
     case CLEAR:
-      prevRotationMarker = 0;
+      ESP.restart(); // TODO: avoid this?
+      /* prevRotationMarker = 0;
       rotationMarkers = 0;
       lastRotationDuration = 0;
       lastPower = 0;
       pedalStartTime = 0;
       millijoules = 0;
-      pedalledTime = 0;
+      pedalledTime = 0; */
       break;
 #if defined(HEART_BEACON) || defined(HEART_CLIENT)      
     case RESCAN_HEART:
