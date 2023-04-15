@@ -1551,10 +1551,15 @@ void loop ()
 
 #ifdef SUPPORT_WIFI
   if (wiFiMode && remoteClient.connected()) {
+    static uint32_t lastReportedRotationMarker = 0;
     remoteClient.printf("time %lu\n", t);
     remoteClient.printf("power %u\n", _power);
     remoteClient.printf("cadence %u\n", rpm);
     remoteClient.printf("level %u\n", resistanceValue);
+    if (lastReportedRotationMarker != _prevRotationMarker) {
+      remoteClient.printf("rotation %u\n", _prevRotationMarker);
+      lastReportedRotationMarker = _prevRotationMarker;
+    }
 #if defined( HEART_BEACON ) || defined( HEART_CLIENT ) // TODO: add HEART_PIN support
     static unsigned lastReportedHeartRate = 0;
     unsigned hr = getHeartRate();
